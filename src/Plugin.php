@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Triptych;
 
+use Triptych\Admin\PostListColumn;
 use Triptych\Admin\SettingsPage;
 use Triptych\Editor\AssetsEnqueue;
 use Triptych\Editor\Metabox;
@@ -47,6 +48,7 @@ final class Plugin
         AssetsEnqueue::register();
         Translator::registerRest();
         SettingsPage::register();
+        PostListColumn::register();
 
         // Anything that calls __()/load_plugin_textdomain MUST defer
         // until init — calling translation functions before then trips
