@@ -7,6 +7,7 @@ namespace Triptych;
 use Triptych\Admin\AdminBar;
 use Triptych\Admin\PostListColumn;
 use Triptych\Admin\SettingsPage;
+use Triptych\Admin\TranslationsPage;
 use Triptych\Editor\AssetsEnqueue;
 use Triptych\Editor\Metabox;
 use Triptych\Editor\SidebarRest;
@@ -49,6 +50,7 @@ final class Plugin
         AssetsEnqueue::register();
         Translator::registerRest();
         SettingsPage::register();
+        TranslationsPage::register();
         PostListColumn::register();
         AdminBar::register();
 

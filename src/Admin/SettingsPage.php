@@ -284,7 +284,7 @@ final class SettingsPage
      * @param string[] $slugs
      * @return array<string, int>
      */
-    private static function languageCoverage(array $slugs, string $default): array
+    public static function languageCoverage(array $slugs, string $default): array
     {
         $cache_key = 'triptych_overview_coverage_' . md5(implode(',', $slugs) . '|' . $default);
         $cached = get_transient($cache_key);
@@ -326,7 +326,7 @@ final class SettingsPage
      * post_title / post_content) expand to every public post type that
      * supports an editor — same surface the wp-admin pill column targets.
      */
-    private static function triptychPostTypes(): array
+    public static function triptychPostTypes(): array
     {
         $explicit = [];
         $applies_to_all = false;
