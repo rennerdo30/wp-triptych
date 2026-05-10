@@ -4,7 +4,7 @@
  * Plugin URI: https://github.com/rennerdo30/wp-triptych
  * Description: Single-post multilingual editor with inline 3-language tabs and OpenAI auto-translate. One canonical post, multiple language fields, no per-language post twins.
  * Version: 0.1.0
- * Author: Renner
+ * Author: renner.dev
  * Author URI: https://renner.dev
  * License: MIT
  * License URI: https://opensource.org/licenses/MIT

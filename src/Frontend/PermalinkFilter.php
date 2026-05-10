@@ -54,7 +54,10 @@ final class PermalinkFilter
         if (!Languages::isValid($lang)) {
             return $url;
         }
-        $home = home_url('/');
+        // Critical: home_url() would re-trigger the homeUrl filter we're
+        // INSIDE, causing infinite recursion → OOM. site_url() is the
+        // unfiltered alternative — same value on a typical WP install.
+        $home = self::siteHome();
         if (!str_starts_with($url, $home)) {
             return $url;
         }
@@ -66,5 +69,12 @@ final class PermalinkFilter
             }
         }
         return $home . $lang . '/' . $remainder;
+    }
+
+    private static ?string $cachedHome = null;
+
+    private static function siteHome(): string
+    {
+        return self::$cachedHome ??= rtrim((string) site_url('/'), '/') . '/';
     }
 }

@@ -29,27 +29,40 @@ final class Plugin
 
     public function boot(): void
     {
-        load_plugin_textdomain('triptych', false, dirname(plugin_basename(TRIPTYCH_FILE)) . '/languages');
-
-        // Default field set — themes can register more.
-        Fields::register('post_title', ['type' => 'text', 'label' => __('Title', 'triptych')]);
-        Fields::register('post_content', ['type' => 'textarea', 'label' => __('Content', 'triptych')]);
-
-        // Routing must run early so language is resolved before queries fire.
+        // Hook registrations that don't immediately call __() — safe on
+        // plugins_loaded.  Each register() method internally calls
+        // add_action / add_filter; the actual __() calls happen later
+        // when those hooks fire (admin_menu, the_title, etc).
         Router::register();
-
-        // Frontend filters.
         TitleFilter::register();
         ContentFilter::register();
         PermalinkFilter::register();
         HreflangEmitter::register();
-
-        // Editor UI.
         Metabox::register();
         AssetsEnqueue::register();
-
-        // REST + admin.
         Translator::registerRest();
         SettingsPage::register();
+
+        // Anything that calls __()/load_plugin_textdomain MUST defer
+        // until init — calling translation functions before then trips
+        // WP 6.7's `_load_textdomain_just_in_time` warning, which leaks
+        // into response bodies and breaks header() emission downstream.
+        add_action('init', [self::class, 'bootTranslated'], 1);
+    }
+
+    /**
+     * init-priority-1 phase: load textdomain and register the default
+     * multilingual fields with their translatable labels.
+     */
+    public static function bootTranslated(): void
+    {
+        load_plugin_textdomain(
+            'triptych',
+            false,
+            dirname(plugin_basename(TRIPTYCH_FILE)) . '/languages'
+        );
+
+        Fields::register('post_title',   ['type' => 'text',     'label' => __('Title',   'triptych')]);
+        Fields::register('post_content', ['type' => 'textarea', 'label' => __('Content', 'triptych')]);
     }
 }
