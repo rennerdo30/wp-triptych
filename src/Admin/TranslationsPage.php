@@ -19,8 +19,11 @@ use Triptych\Editor\SidebarRest;
  *   - Filter row: post type, language, search-by-title.
  *   - Per-row "Translate missing" button → fills empty post_title +
  *     post_content for every non-default language via Translator.
- *   - Bulk translate: serialized batches of 5 across the filtered set
- *     for a chosen language.
+ *   - Bulk translate: serialized per-row calls across the filtered set
+ *     for a chosen language with live progress.
+ *   - Per-cell popover (non-default-language cells only) with
+ *     **Edit** / **Re-translate** / **Delete** actions that reuse the
+ *     REST endpoints `/triptych/v1/save` and `/triptych/v1/translate`.
  *   - Collapsible raw data viewer: per-row grid of every registered
  *     field × every language showing the raw `_triptych_<field>_<lang>`
  *     postmeta values (or fallback resolution from Fields::get).
@@ -100,6 +103,10 @@ final class TranslationsPage
             's'     => $search,
         ], static fn ($v) => $v !== '');
 
+        // Range banner ("Showing X-Y of Z").
+        $range_from = $total === 0 ? 0 : (($paged - 1) * self::PAGE_SIZE) + 1;
+        $range_to   = min($total, $paged * self::PAGE_SIZE);
+
         ?>
         <div class="wrap triptych-translations">
             <h1><?php esc_html_e('Triptych — Translations', 'triptych'); ?></h1>
@@ -173,6 +180,20 @@ final class TranslationsPage
                 <progress id="triptych-tx-bulk-progress" max="100" value="0" hidden></progress>
             </div>
 
+            <?php if ($total > 0): ?>
+                <div class="triptych-tx-rangebar">
+                    <?php
+                    echo esc_html(sprintf(
+                        /* translators: 1: first row index, 2: last row index, 3: total post count */
+                        __('Showing %1$d–%2$d of %3$d posts', 'triptych'),
+                        $range_from,
+                        $range_to,
+                        $total
+                    ));
+                    ?>
+                </div>
+            <?php endif; ?>
+
             <?php if ($rows === []): ?>
                 <p><em><?php esc_html_e('No posts match the current filters.', 'triptych'); ?></em></p>
             <?php else: ?>
@@ -200,15 +221,30 @@ final class TranslationsPage
                 echo wp_json_encode([
                     'ajax'      => admin_url('admin-ajax.php'),
                     'nonce'     => wp_create_nonce('triptych_tx'),
+                    'rest'      => esc_url_raw(rest_url('triptych/v1/')),
+                    'restNonce' => wp_create_nonce('wp_rest'),
                     'languages' => $languages,
                     'default'   => $default,
                     'i18n'      => [
-                        'translating'  => __('Translating…', 'triptych'),
-                        'done'         => __('Done.', 'triptych'),
-                        'error'        => __('Error', 'triptych'),
-                        'nothing'      => __('Nothing to translate.', 'triptych'),
-                        'progress'     => __('Translated %1$d of %2$d posts.', 'triptych'),
-                        'searchEmpty'  => __('No rows match your search.', 'triptych'),
+                        'translating'   => __('Translating…', 'triptych'),
+                        'saving'        => __('Saving…', 'triptych'),
+                        'deleting'      => __('Deleting…', 'triptych'),
+                        'done'          => __('Done.', 'triptych'),
+                        'error'         => __('Error', 'triptych'),
+                        'nothing'       => __('Nothing to translate.', 'triptych'),
+                        'progress'      => __('Translated %1$d of %2$d posts.', 'triptych'),
+                        'searchEmpty'   => __('No rows match your search.', 'triptych'),
+                        'bulkComplete'  => __('Bulk translation complete. Reloading…', 'triptych'),
+                        'edit'          => __('Edit', 'triptych'),
+                        'retranslate'   => __('Re-translate', 'triptych'),
+                        'delete'        => __('Delete', 'triptych'),
+                        'save'          => __('Save', 'triptych'),
+                        'cancel'        => __('Cancel', 'triptych'),
+                        'confirmDelete' => __('Delete translation for %s?', 'triptych'),
+                        'title'         => __('Title', 'triptych'),
+                        'content'       => __('Content', 'triptych'),
+                        'empty'         => __('(empty)', 'triptych'),
+                        'noSource'      => __('No source text to translate from.', 'triptych'),
                     ],
                 ]);
             ?></script>
@@ -253,8 +289,10 @@ final class TranslationsPage
      * Pull rows for the table in a single SQL pass.
      *
      * Bound at PAGE_SIZE rows per page. If filter_lang is set, only rows
-     * MISSING that language are returned. Otherwise rows missing ANY
-     * non-default language. Search matches across all stored title
+     * MISSING that language are returned — accurate count via SQL
+     * `NOT EXISTS` against the `_triptych_post_title_<lang>` /
+     * `_triptych_post_content_<lang>` postmeta. Otherwise rows missing
+     * ANY non-default language. Search matches across all stored title
      * languages.
      *
      * @param string[] $post_types
@@ -289,6 +327,19 @@ final class TranslationsPage
             $params[] = $like;
             $params[] = '_triptych_post_title_%';
             $params[] = $like;
+        }
+
+        if ($filter_lang !== '' && $filter_lang !== $default) {
+            // Keep only posts missing BOTH title AND content for the lang.
+            // Mirrors the bulk endpoint's NOT EXISTS check so the count
+            // banner and the per-page rows agree with bulk.
+            $where[] = "NOT EXISTS (
+                SELECT 1 FROM {$wpdb->postmeta} flm
+                 WHERE flm.post_id = p.ID
+                   AND flm.meta_key = %s
+                   AND flm.meta_value <> ''
+            )";
+            $params[] = Fields::metaKey('post_title', $filter_lang);
         }
 
         $where_sql = implode(' AND ', $where);
@@ -381,13 +432,6 @@ final class TranslationsPage
                 $lang_state[$slug] = $legacy !== '' ? 'legacy' : 'empty';
             }
 
-            // Apply filter: when filter_lang set, only keep posts MISSING that lang.
-            if ($filter_lang !== '') {
-                if (($lang_state[$filter_lang] ?? 'empty') !== 'empty') {
-                    continue;
-                }
-            }
-
             // Skip rows that are completely empty (no native title, no translations).
             if (((string) $p->post_title) === '' && $raw === []) {
                 continue;
@@ -464,9 +508,13 @@ final class TranslationsPage
                     <?php
                     $cls = 'is-' . $state;
                     $title_attr = sprintf('%s — %s', strtoupper($slug), $state);
+                    $is_default = $slug === $default;
+                    $interactive = !$is_default;
                     ?>
-                    <span class="triptych-tx-pill <?php echo esc_attr($cls); ?>"
+                    <span class="triptych-tx-pill <?php echo esc_attr($cls); ?><?php echo $interactive ? ' is-interactive' : ''; ?>"
                           data-lang="<?php echo esc_attr($slug); ?>"
+                          data-post-id="<?php echo (int) $pid; ?>"
+                          <?php if ($interactive): ?>tabindex="0" role="button" aria-haspopup="true"<?php endif; ?>
                           title="<?php echo esc_attr($title_attr); ?>">
                         <?php echo esc_html(strtoupper($slug)); ?>
                     </span>
@@ -557,6 +605,8 @@ final class TranslationsPage
     }
 
     /**
+     * Render WP-style pagination via paginate_links().
+     *
      * @param array<string,string|int> $base_qs
      */
     private static function renderPagination(int $total, int $paged, array $base_qs): void
@@ -565,19 +615,28 @@ final class TranslationsPage
         if ($pages <= 1) {
             return;
         }
+
+        $base_url = add_query_arg($base_qs, admin_url('admin.php'));
+        $links = paginate_links([
+            'base'      => add_query_arg('paged', '%#%', $base_url),
+            'format'    => '',
+            'prev_text' => __('« Prev', 'triptych'),
+            'next_text' => __('Next »', 'triptych'),
+            'total'     => $pages,
+            'current'   => $paged,
+            'type'      => 'array',
+            'end_size'  => 1,
+            'mid_size'  => 2,
+        ]);
+
         echo '<div class="tablenav bottom"><div class="tablenav-pages">';
         echo '<span class="displaying-num">' . esc_html(sprintf(
-            /* translators: %d: total post count */
-            _n('%d post', '%d posts', $total, 'triptych'),
-            $total
+            /* translators: %s: total post count */
+            _n('%s post', '%s posts', $total, 'triptych'),
+            number_format_i18n($total)
         )) . '</span> ';
-        for ($i = 1; $i <= $pages; $i++) {
-            $url = add_query_arg(array_merge($base_qs, ['paged' => $i]), admin_url('admin.php'));
-            if ($i === $paged) {
-                echo '<span class="page-numbers current">' . (int) $i . '</span> ';
-            } else {
-                printf('<a class="page-numbers" href="%s">%d</a> ', esc_url($url), (int) $i);
-            }
+        if (is_array($links)) {
+            echo '<span class="pagination-links">' . wp_kses_post(implode(' ', $links)) . '</span>';
         }
         echo '</div></div>';
     }
@@ -696,8 +755,9 @@ final class TranslationsPage
 
     /**
      * Bulk endpoint: returns the list of post IDs that need translation
-     * for the requested language. The client iterates 5 at a time
-     * hitting the per-row endpoint to keep the upstream API serial.
+     * for the requested language. The client iterates over the list
+     * serially against the per-row endpoint to keep the upstream API
+     * burst bounded.
      *
      * Response shape: { post_ids: [int, ...], total: int, lang: string }
      */
@@ -771,6 +831,13 @@ final class TranslationsPage
     border-radius: 0 4px 4px 0;
     font-size: 13px;
 }
+.triptych-tx-rangebar {
+    margin: 0 0 8px;
+    color: #50575e;
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
+}
 .triptych-tx-filters {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
     margin-bottom: 12px;
@@ -781,7 +848,7 @@ final class TranslationsPage
 .triptych-tx-bulk-status { color: #50575e; font-size: 13px; }
 .triptych-tx-table .col-toggle { width: 28px; text-align: center; }
 .triptych-tx-table .col-pt { width: 120px; }
-.triptych-tx-table .col-langs { width: 220px; }
+.triptych-tx-table .col-langs { width: 220px; position: relative; }
 .triptych-tx-table .col-actions { width: 220px; }
 .triptych-tx-table .row-id { color: #8c8f94; font-size: 11px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .triptych-tx-toggle {
@@ -798,12 +865,21 @@ final class TranslationsPage
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
     line-height: 1.5; border: 1px solid transparent;
+    user-select: none;
 }
 .triptych-tx-pill.is-source { background: #1d2327; color: #fff; border-color: #1d2327; }
 .triptych-tx-pill.is-translated { background: #16a34a; color: #fff; border-color: #16a34a; }
 .triptych-tx-pill.is-legacy { background: transparent; color: #b58105; border-color: #f0b849; }
 .triptych-tx-pill.is-empty { background: transparent; color: #8c8f94; border-color: #c3c4c7; }
 .triptych-tx-pill.is-empty.is-pending { background: #f0f6fc; color: #2271b1; border-color: #72aee6; }
+.triptych-tx-pill.is-interactive { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; }
+.triptych-tx-pill.is-interactive:hover,
+.triptych-tx-pill.is-interactive:focus-visible {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 2px rgba(34, 113, 177, 0.25);
+    outline: none;
+}
+.triptych-tx-pill.is-busy { opacity: 0.6; }
 .triptych-tx-row-status { font-size: 12px; color: #50575e; margin-left: 6px; }
 .triptych-tx-row-status.is-error { color: #b32d2e; }
 .triptych-tx-row-status.is-success { color: #2a8b3a; }
@@ -826,6 +902,130 @@ final class TranslationsPage
 }
 .triptych-tx-grid td.cell.is-fallback { border-style: dashed; color: #50575e; }
 .triptych-tx-grid td.cell.is-empty { color: #8c8f94; }
+
+/* Cell popover */
+.triptych-tx-popover {
+    position: absolute;
+    z-index: 9999;
+    min-width: 220px;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    padding: 6px;
+    font-size: 12px;
+}
+.triptych-tx-popover .triptych-tx-popover-header {
+    padding: 4px 6px 6px;
+    color: #50575e;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border-bottom: 1px solid #f0f0f1;
+    margin-bottom: 4px;
+}
+.triptych-tx-popover button.triptych-tx-action {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    padding: 6px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    color: #1d2327;
+}
+.triptych-tx-popover button.triptych-tx-action:hover,
+.triptych-tx-popover button.triptych-tx-action:focus-visible {
+    background: #f0f6fc;
+    outline: none;
+}
+.triptych-tx-popover button.triptych-tx-action.is-danger { color: #b32d2e; }
+.triptych-tx-popover button.triptych-tx-action.is-danger:hover { background: #fcf0f1; }
+.triptych-tx-popover button.triptych-tx-action[disabled] {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+.triptych-tx-popover .triptych-tx-popover-status {
+    padding: 4px 8px;
+    color: #50575e;
+    font-size: 11px;
+}
+.triptych-tx-popover .triptych-tx-popover-status.is-error { color: #b32d2e; }
+
+/* Inline editor */
+.triptych-tx-editor-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(29, 35, 39, 0.42);
+    z-index: 10000;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 8vh 16px 16px;
+}
+.triptych-tx-editor {
+    width: 100%;
+    max-width: 720px;
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+    padding: 18px 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.triptych-tx-editor h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+.triptych-tx-editor .triptych-tx-editor-meta {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #50575e;
+}
+.triptych-tx-editor label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: #1d2327;
+}
+.triptych-tx-editor input[type="text"],
+.triptych-tx-editor textarea {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid #8c8f94;
+    border-radius: 3px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 13px;
+}
+.triptych-tx-editor textarea {
+    min-height: 160px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.55;
+}
+.triptych-tx-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+.triptych-tx-editor-status {
+    font-size: 12px;
+    color: #50575e;
+    min-height: 1.4em;
+}
+.triptych-tx-editor-status.is-error { color: #b32d2e; }
+.triptych-tx-editor-status.is-success { color: #2a8b3a; }
+
 @media (max-width: 782px) {
     .triptych-tx-table .col-pt { display: none; }
 }
@@ -842,9 +1042,93 @@ CSS;
             const cfg = JSON.parse(cfgEl.textContent);
             const ajax = cfg.ajax;
             const nonce = cfg.nonce;
+            const restBase = cfg.rest;
+            const restNonce = cfg.restNonce;
             const i18n = cfg.i18n;
+            const defaultLang = cfg.default;
+            const languages = cfg.languages || {};
 
-            // Toggle raw-data viewer per row.
+            // -----------------------------------------------------------
+            // Generic helpers
+            // -----------------------------------------------------------
+            function ajaxPost(action, params) {
+                const body = new URLSearchParams();
+                body.set('action', action);
+                body.set('_wpnonce', nonce);
+                Object.keys(params || {}).forEach(k => {
+                    if (params[k] !== undefined && params[k] !== null) {
+                        body.set(k, String(params[k]));
+                    }
+                });
+                return fetch(ajax, { method: 'POST', body, credentials: 'same-origin' })
+                    .then(r => r.json());
+            }
+
+            function restCall(method, path, payload) {
+                const opts = {
+                    method,
+                    headers: { 'X-WP-Nonce': restNonce, 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                };
+                if (payload !== undefined) opts.body = JSON.stringify(payload);
+                return fetch(restBase + path, opts).then(async r => {
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok) {
+                        const msg = (data && (data.message || (data.data && data.data.message))) || ('HTTP ' + r.status);
+                        throw new Error(msg);
+                    }
+                    return data;
+                });
+            }
+
+            function applyLangStateToRow(row, lang_state) {
+                if (!row || !lang_state) return;
+                row.querySelectorAll('.triptych-tx-pill').forEach(p => {
+                    const slug = p.dataset.lang;
+                    if (!lang_state[slug]) return;
+                    p.classList.remove('is-pending', 'is-busy', 'is-source', 'is-translated', 'is-empty', 'is-legacy');
+                    p.classList.add('is-' + lang_state[slug]);
+                });
+                const stillMissing = Object.keys(lang_state)
+                    .filter(s => lang_state[s] === 'empty' && s !== defaultLang);
+                row.setAttribute('data-missing', stillMissing.join(','));
+            }
+
+            async function refreshRowFromRest(row) {
+                if (!row) return;
+                const postId = row.getAttribute('data-post-id');
+                try {
+                    const state = await restCall('GET', 'post/' + encodeURIComponent(postId));
+                    const lang_state = {};
+                    const fields = state.fields || {};
+                    Object.keys(languages).forEach(slug => {
+                        if (slug === defaultLang) {
+                            const titleHasValue = fields.post_title
+                                && fields.post_title.values
+                                && fields.post_title.values[slug]
+                                && fields.post_title.values[slug].has_value;
+                            lang_state[slug] = titleHasValue ? 'source' : 'empty';
+                            return;
+                        }
+                        let hasEnvelope = false;
+                        let hasLegacy = false;
+                        Object.keys(fields).forEach(fname => {
+                            const v = fields[fname].values && fields[fname].values[slug];
+                            if (!v) return;
+                            if (v.has_envelope) hasEnvelope = true;
+                            else if (v.has_value) hasLegacy = true;
+                        });
+                        lang_state[slug] = hasEnvelope ? 'translated' : (hasLegacy ? 'legacy' : 'empty');
+                    });
+                    applyLangStateToRow(row, lang_state);
+                } catch (e) {
+                    // Soft-fail: pills stay as they were.
+                }
+            }
+
+            // -----------------------------------------------------------
+            // Raw-data viewer toggle.
+            // -----------------------------------------------------------
             document.querySelectorAll('.triptych-tx-toggle').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const expanded = btn.getAttribute('aria-expanded') === 'true';
@@ -855,7 +1139,9 @@ CSS;
                 });
             });
 
+            // -----------------------------------------------------------
             // Per-row translate-missing.
+            // -----------------------------------------------------------
             async function translateRow(row, lang) {
                 const postId = row.getAttribute('data-post-id');
                 const status = row.querySelector('.triptych-tx-row-status');
@@ -865,7 +1151,6 @@ CSS;
                     status.classList.remove('is-error', 'is-success');
                     status.textContent = i18n.translating;
                 }
-                // Mark targeted pills as pending.
                 const pills = row.querySelectorAll('.triptych-tx-pill');
                 pills.forEach(p => {
                     if (p.classList.contains('is-empty') && (!lang || p.dataset.lang === lang)) {
@@ -873,29 +1158,16 @@ CSS;
                     }
                 });
 
-                const body = new URLSearchParams();
-                body.set('action', 'triptych_translate_missing');
-                body.set('_wpnonce', nonce);
-                body.set('post_id', postId);
-                if (lang) body.set('lang', lang);
-
                 try {
-                    const r = await fetch(ajax, { method: 'POST', body });
-                    const j = await r.json();
+                    const j = await ajaxPost('triptych_translate_missing', {
+                        post_id: postId,
+                        lang: lang || '',
+                    });
                     if (!j.success) {
                         throw new Error((j.data && j.data.message) || i18n.error);
                     }
-                    // Refresh pills from lang_state.
                     const ls = j.data.lang_state || {};
-                    pills.forEach(p => {
-                        const slug = p.dataset.lang;
-                        if (!ls[slug]) return;
-                        p.classList.remove('is-pending', 'is-source', 'is-translated', 'is-empty', 'is-legacy');
-                        p.classList.add('is-' + ls[slug]);
-                    });
-                    // Recompute missing list.
-                    const stillMissing = Object.keys(ls).filter(s => ls[s] === 'empty' && s !== cfg.default);
-                    row.setAttribute('data-missing', stillMissing.join(','));
+                    applyLangStateToRow(row, ls);
                     if (status) {
                         const errs = (j.data.errors || []);
                         if (errs.length) {
@@ -906,6 +1178,8 @@ CSS;
                             status.textContent = i18n.done;
                         }
                     }
+                    const stillMissing = (row.getAttribute('data-missing') || '')
+                        .split(',').filter(Boolean);
                     if (btn && stillMissing.length === 0) {
                         btn.remove();
                         const td = row.querySelector('.col-actions');
@@ -923,7 +1197,7 @@ CSS;
                         status.classList.add('is-error');
                         status.textContent = String(err && err.message ? err.message : err);
                     }
-                    return { ok: false, error: String(err) };
+                    return { ok: false, error: String(err && err.message ? err.message : err) };
                 } finally {
                     if (btn) btn.disabled = false;
                 }
@@ -936,7 +1210,9 @@ CSS;
                 });
             });
 
+            // -----------------------------------------------------------
             // Bulk translate.
+            // -----------------------------------------------------------
             const bulkBtn = document.getElementById('triptych-tx-bulk-btn');
             const bulkStatus = document.getElementById('triptych-tx-bulk-status');
             const bulkProgress = document.getElementById('triptych-tx-bulk-progress');
@@ -952,17 +1228,10 @@ CSS;
                         bulkProgress.value = 0;
                     }
 
-                    // Step 1: fetch list.
-                    const body = new URLSearchParams();
-                    body.set('action', 'triptych_bulk_translate');
-                    body.set('_wpnonce', nonce);
-                    body.set('lang', lang);
-                    if (pt) body.set('post_type', pt);
-
+                    // Step 1: fetch list of post IDs.
                     let ids = [];
                     try {
-                        const r = await fetch(ajax, { method: 'POST', body });
-                        const j = await r.json();
+                        const j = await ajaxPost('triptych_bulk_translate', { lang, post_type: pt });
                         if (!j.success) throw new Error((j.data && j.data.message) || i18n.error);
                         ids = j.data.post_ids || [];
                     } catch (err) {
@@ -980,53 +1249,49 @@ CSS;
 
                     if (bulkProgress) bulkProgress.max = ids.length;
 
-                    // Step 2: serialize through per-row endpoint, 5 at a time.
+                    // Step 2: serialize each per-row call. Errors don't halt
+                    // the batch — the upstream API is rate-sensitive, but a
+                    // single content failure shouldn't stop the rest.
                     let done = 0;
-                    const batchSize = 5;
-                    for (let i = 0; i < ids.length; i += batchSize) {
-                        const batch = ids.slice(i, i + batchSize);
-                        // Serial within the batch — upstream API is rate-sensitive.
-                        for (const pid of batch) {
-                            const row = document.querySelector(`tr.triptych-tx-row[data-post-id="${pid}"]`);
-                            const innerBody = new URLSearchParams();
-                            innerBody.set('action', 'triptych_translate_missing');
-                            innerBody.set('_wpnonce', nonce);
-                            innerBody.set('post_id', String(pid));
-                            innerBody.set('lang', lang);
-                            try {
-                                const r = await fetch(ajax, { method: 'POST', body: innerBody });
-                                const j = await r.json();
-                                if (j.success && row) {
-                                    const ls = j.data.lang_state || {};
-                                    row.querySelectorAll('.triptych-tx-pill').forEach(p => {
-                                        const slug = p.dataset.lang;
-                                        if (!ls[slug]) return;
-                                        p.classList.remove('is-pending', 'is-source', 'is-translated', 'is-empty', 'is-legacy');
-                                        p.classList.add('is-' + ls[slug]);
-                                    });
-                                }
-                            } catch (e) {
-                                // continue; partial progress is useful
+                    let errorCount = 0;
+                    for (const pid of ids) {
+                        const row = document.querySelector(`tr.triptych-tx-row[data-post-id="${pid}"]`);
+                        try {
+                            const j = await ajaxPost('triptych_translate_missing', {
+                                post_id: pid,
+                                lang,
+                            });
+                            if (j && j.success) {
+                                applyLangStateToRow(row, j.data.lang_state || {});
+                                if ((j.data.errors || []).length) errorCount++;
+                            } else {
+                                errorCount++;
                             }
-                            done++;
-                            if (bulkProgress) bulkProgress.value = done;
-                            if (bulkStatus) {
-                                bulkStatus.textContent = i18n.progress
-                                    .replace('%1$d', done)
-                                    .replace('%2$d', ids.length);
-                            }
+                        } catch (e) {
+                            errorCount++;
+                        }
+                        done++;
+                        if (bulkProgress) bulkProgress.value = done;
+                        if (bulkStatus) {
+                            bulkStatus.textContent = i18n.progress
+                                .replace('%1$d', done)
+                                .replace('%2$d', ids.length);
                         }
                     }
-                    if (bulkStatus) bulkStatus.textContent = i18n.done + ' ' +
-                        i18n.progress.replace('%1$d', done).replace('%2$d', ids.length);
-                    bulkBtn.disabled = false;
+
+                    if (bulkStatus) {
+                        bulkStatus.textContent = i18n.bulkComplete + ' ' +
+                            i18n.progress.replace('%1$d', done).replace('%2$d', ids.length);
+                    }
+                    // Page reload so pills, counts and pagination all reflect
+                    // the new state. The bulk run is the explicit user
+                    // intent for "fill everything"; reloading is the
+                    // honest UX for it.
+                    setTimeout(() => { window.location.reload(); }, 600);
                 });
             }
 
             // Client-side title search highlight (works on the rendered page).
-            // The server-side `s` filter handles deep matches across stored
-            // translation titles; this client-side layer just hides rows
-            // that don't match a refined query without round-tripping.
             const searchInput = document.querySelector('.triptych-tx-filters input[name="s"]');
             if (searchInput) {
                 searchInput.addEventListener('input', () => {
@@ -1038,7 +1303,6 @@ CSS;
                         }
                         const hay = row.getAttribute('data-search') || '';
                         row.style.display = hay.indexOf(q) === -1 ? 'none' : '';
-                        // Hide the corresponding detail row too.
                         const detailId = row.querySelector('.triptych-tx-toggle')
                             ?.getAttribute('aria-controls');
                         if (detailId) {
@@ -1047,6 +1311,298 @@ CSS;
                         }
                     });
                 });
+            }
+
+            // -----------------------------------------------------------
+            // Per-cell popover (Edit / Re-translate / Delete) on non-default
+            // language pills. The popover anchors to the clicked pill, sits
+            // inside the same row, and routes through the REST endpoints
+            // /triptych/v1/save and /triptych/v1/translate.
+            // -----------------------------------------------------------
+            let openPopover = null;
+
+            function closePopover() {
+                if (openPopover && openPopover.parentNode) {
+                    openPopover.parentNode.removeChild(openPopover);
+                }
+                openPopover = null;
+            }
+
+            document.addEventListener('click', (e) => {
+                if (!openPopover) return;
+                if (openPopover.contains(e.target)) return;
+                if (e.target.classList && e.target.classList.contains('triptych-tx-pill')) return;
+                closePopover();
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') closePopover();
+            });
+
+            function buildPopover(pill) {
+                closePopover();
+                const lang = pill.dataset.lang;
+                const postId = pill.dataset.postId;
+                const row = pill.closest('tr.triptych-tx-row');
+                if (!lang || !postId || lang === defaultLang) return;
+
+                const pop = document.createElement('div');
+                pop.className = 'triptych-tx-popover';
+                pop.setAttribute('role', 'menu');
+
+                const header = document.createElement('div');
+                header.className = 'triptych-tx-popover-header';
+                header.textContent = (languages[lang] || lang) + ' · #' + postId;
+                pop.appendChild(header);
+
+                const state = pill.classList.contains('is-translated')
+                    ? 'translated'
+                    : pill.classList.contains('is-legacy')
+                        ? 'legacy'
+                        : pill.classList.contains('is-source')
+                            ? 'source'
+                            : 'empty';
+
+                const editBtn = document.createElement('button');
+                editBtn.type = 'button';
+                editBtn.className = 'triptych-tx-action';
+                editBtn.textContent = i18n.edit;
+                editBtn.addEventListener('click', () => {
+                    closePopover();
+                    openEditor(row, postId, lang);
+                });
+                pop.appendChild(editBtn);
+
+                const retransBtn = document.createElement('button');
+                retransBtn.type = 'button';
+                retransBtn.className = 'triptych-tx-action';
+                retransBtn.textContent = i18n.retranslate;
+                retransBtn.addEventListener('click', async () => {
+                    retransBtn.disabled = true;
+                    editBtn.disabled = true;
+                    delBtn.disabled = true;
+                    const status = document.createElement('div');
+                    status.className = 'triptych-tx-popover-status';
+                    status.textContent = i18n.translating;
+                    pop.appendChild(status);
+                    pill.classList.add('is-busy');
+                    try {
+                        await retranslateCell(postId, lang);
+                        await refreshRowFromRest(row);
+                        closePopover();
+                    } catch (err) {
+                        status.classList.add('is-error');
+                        status.textContent = String(err && err.message ? err.message : err);
+                        retransBtn.disabled = false;
+                        editBtn.disabled = false;
+                        delBtn.disabled = false;
+                    } finally {
+                        pill.classList.remove('is-busy');
+                    }
+                });
+                pop.appendChild(retransBtn);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'triptych-tx-action is-danger';
+                delBtn.textContent = i18n.delete;
+                if (state === 'empty') {
+                    delBtn.disabled = true;
+                }
+                delBtn.addEventListener('click', async () => {
+                    const msg = i18n.confirmDelete.replace('%s', (languages[lang] || lang));
+                    if (!window.confirm(msg)) return;
+                    delBtn.disabled = true;
+                    editBtn.disabled = true;
+                    retransBtn.disabled = true;
+                    const status = document.createElement('div');
+                    status.className = 'triptych-tx-popover-status';
+                    status.textContent = i18n.deleting;
+                    pop.appendChild(status);
+                    pill.classList.add('is-busy');
+                    try {
+                        await deleteCell(postId, lang);
+                        await refreshRowFromRest(row);
+                        closePopover();
+                    } catch (err) {
+                        status.classList.add('is-error');
+                        status.textContent = String(err && err.message ? err.message : err);
+                        delBtn.disabled = false;
+                        editBtn.disabled = false;
+                        retransBtn.disabled = false;
+                    } finally {
+                        pill.classList.remove('is-busy');
+                    }
+                });
+                pop.appendChild(delBtn);
+
+                // Anchor under the pill.
+                const rect = pill.getBoundingClientRect();
+                pop.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+                pop.style.left = (window.scrollX + rect.left) + 'px';
+                document.body.appendChild(pop);
+                openPopover = pop;
+            }
+
+            document.querySelectorAll('.triptych-tx-pill.is-interactive').forEach(pill => {
+                pill.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    buildPopover(pill);
+                });
+                pill.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        buildPopover(pill);
+                    }
+                });
+            });
+
+            // -----------------------------------------------------------
+            // REST helpers for cell-level mutations.
+            // -----------------------------------------------------------
+            async function saveCell(postId, lang, field, value) {
+                return restCall('POST', 'save', {
+                    post_id: Number(postId),
+                    field,
+                    lang,
+                    value,
+                });
+            }
+
+            async function deleteCell(postId, lang) {
+                // Empty value triggers postmeta deletion server-side.
+                await saveCell(postId, lang, 'post_title', '');
+                await saveCell(postId, lang, 'post_content', '');
+            }
+
+            async function retranslateCell(postId, lang) {
+                // Pull current source values, translate each, save.
+                const state = await restCall('GET', 'post/' + encodeURIComponent(postId));
+                const fields = state.fields || {};
+                const work = ['post_title', 'post_content'];
+                for (const field of work) {
+                    const f = fields[field];
+                    if (!f) continue;
+                    const source = (f.values && f.values[defaultLang] && f.values[defaultLang].value) || '';
+                    if (!source.trim()) continue;
+                    const r = await restCall('POST', 'translate', {
+                        from: defaultLang,
+                        to: lang,
+                        text: source,
+                        field,
+                    });
+                    const translated = (r && r.translated) || '';
+                    await saveCell(postId, lang, field, String(translated));
+                }
+            }
+
+            // -----------------------------------------------------------
+            // Inline editor (post_title + post_content for ONE language).
+            // -----------------------------------------------------------
+            async function openEditor(row, postId, lang) {
+                // Read current values via REST so we always see the live
+                // envelope, including the legacy-resolved fallback.
+                let titleVal = '';
+                let contentVal = '';
+                try {
+                    const state = await restCall('GET', 'post/' + encodeURIComponent(postId));
+                    const fields = state.fields || {};
+                    titleVal = (fields.post_title && fields.post_title.values
+                        && fields.post_title.values[lang] && fields.post_title.values[lang].value) || '';
+                    contentVal = (fields.post_content && fields.post_content.values
+                        && fields.post_content.values[lang] && fields.post_content.values[lang].value) || '';
+                } catch (e) {
+                    // Fall through with empty fields; user can still type.
+                }
+
+                const overlay = document.createElement('div');
+                overlay.className = 'triptych-tx-editor-overlay';
+                const editor = document.createElement('div');
+                editor.className = 'triptych-tx-editor';
+
+                const heading = document.createElement('h2');
+                heading.textContent = i18n.edit + ' — ' + (languages[lang] || lang);
+                editor.appendChild(heading);
+
+                const meta = document.createElement('div');
+                meta.className = 'triptych-tx-editor-meta';
+                meta.textContent = '#' + postId + ' · ' + lang.toUpperCase();
+                editor.appendChild(meta);
+
+                const titleLabel = document.createElement('label');
+                const titleSpan = document.createElement('span');
+                titleSpan.textContent = i18n.title;
+                const titleInput = document.createElement('input');
+                titleInput.type = 'text';
+                titleInput.value = titleVal;
+                titleLabel.appendChild(titleSpan);
+                titleLabel.appendChild(titleInput);
+                editor.appendChild(titleLabel);
+
+                const contentLabel = document.createElement('label');
+                const contentSpan = document.createElement('span');
+                contentSpan.textContent = i18n.content;
+                const contentArea = document.createElement('textarea');
+                contentArea.rows = 6;
+                contentArea.value = contentVal;
+                contentLabel.appendChild(contentSpan);
+                contentLabel.appendChild(contentArea);
+                editor.appendChild(contentLabel);
+
+                const statusEl = document.createElement('div');
+                statusEl.className = 'triptych-tx-editor-status';
+                editor.appendChild(statusEl);
+
+                const actions = document.createElement('div');
+                actions.className = 'triptych-tx-editor-actions';
+                const cancelBtn = document.createElement('button');
+                cancelBtn.type = 'button';
+                cancelBtn.className = 'button';
+                cancelBtn.textContent = i18n.cancel;
+                const saveBtn = document.createElement('button');
+                saveBtn.type = 'button';
+                saveBtn.className = 'button button-primary';
+                saveBtn.textContent = i18n.save;
+                actions.appendChild(cancelBtn);
+                actions.appendChild(saveBtn);
+                editor.appendChild(actions);
+
+                function close() {
+                    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                    document.removeEventListener('keydown', escHandler);
+                }
+                function escHandler(e) {
+                    if (e.key === 'Escape') close();
+                }
+                document.addEventListener('keydown', escHandler);
+
+                cancelBtn.addEventListener('click', close);
+                overlay.addEventListener('click', (e) => {
+                    if (e.target === overlay) close();
+                });
+
+                saveBtn.addEventListener('click', async () => {
+                    saveBtn.disabled = true;
+                    cancelBtn.disabled = true;
+                    statusEl.classList.remove('is-error', 'is-success');
+                    statusEl.textContent = i18n.saving;
+                    try {
+                        await saveCell(postId, lang, 'post_title', titleInput.value);
+                        await saveCell(postId, lang, 'post_content', contentArea.value);
+                        statusEl.classList.add('is-success');
+                        statusEl.textContent = i18n.done;
+                        await refreshRowFromRest(row);
+                        setTimeout(close, 350);
+                    } catch (err) {
+                        statusEl.classList.add('is-error');
+                        statusEl.textContent = String(err && err.message ? err.message : err);
+                        saveBtn.disabled = false;
+                        cancelBtn.disabled = false;
+                    }
+                });
+
+                overlay.appendChild(editor);
+                document.body.appendChild(overlay);
+                titleInput.focus();
             }
         })();
         </script>
