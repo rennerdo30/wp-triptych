@@ -292,16 +292,28 @@ final class SettingsPage
             return $cached;
         }
 
-        $totals = [];
-        $total_published = (int) array_sum((array) wp_count_posts('post')) +
-            (int) array_sum((array) wp_count_posts('page'));
+        // Walk every post type that has at least one Triptych field
+        // registered — those are the post types whose translation status
+        // is meaningful. Filter to publish-state.
+        $post_types = self::triptychPostTypes();
 
+        $total_published = 0;
+        foreach ($post_types as $pt) {
+            $counts = wp_count_posts($pt);
+            if (is_object($counts) && isset($counts->publish)) {
+                $total_published += (int) $counts->publish;
+            }
+        }
+
+        $totals = [];
         foreach ($slugs as $slug) {
             if ($slug === $default) {
+                // Source language — every published post in a translatable
+                // post type "has source" by definition.
                 $totals[$slug] = $total_published;
                 continue;
             }
-            $totals[$slug] = self::countPostsWithLang($slug);
+            $totals[$slug] = self::countPostsWithLang($slug, $post_types);
         }
 
         set_transient($cache_key, $totals, 5 * MINUTE_IN_SECONDS);
@@ -309,20 +321,64 @@ final class SettingsPage
     }
 
     /**
-     * Count distinct posts that have any non-empty Triptych title for
-     * the given language slug. Uses one direct SQL query for speed —
-     * the postmeta key prefix is fully constrained.
+     * Resolve the unique post types that have at least one Triptych field.
+     * Empty `post_types` (i.e. fields that apply to ALL post types like
+     * post_title / post_content) expand to every public post type that
+     * supports an editor — same surface the wp-admin pill column targets.
      */
-    private static function countPostsWithLang(string $slug): int
+    private static function triptychPostTypes(): array
     {
+        $explicit = [];
+        $applies_to_all = false;
+        foreach (Fields::all() as $def) {
+            $allowed = (array) ($def['post_types'] ?? []);
+            if ($allowed === []) {
+                $applies_to_all = true;
+                continue;
+            }
+            foreach ($allowed as $pt) {
+                $explicit[(string) $pt] = true;
+            }
+        }
+        if (!$applies_to_all) {
+            return array_keys($explicit);
+        }
+        $all = get_post_types(['public' => true], 'names');
+        unset($all['attachment']);  // never translated
+        return array_values(array_unique(array_merge(array_keys($all), array_keys($explicit))));
+    }
+
+    /**
+     * Count distinct posts that have ANY non-empty Triptych translation
+     * for the given language slug — title, content, OR any custom field
+     * the host theme registered. Direct SQL with a LIKE on the meta_key
+     * prefix is the cheapest way to get a real coverage figure.
+     */
+    private static function countPostsWithLang(string $slug, array $post_types): int
+    {
+        if ($post_types === []) {
+            return 0;
+        }
         global $wpdb;
-        $meta_key = '_triptych_post_title_' . sanitize_key($slug);
-        $count = $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value <> ''",
-                $meta_key
-            )
+        $like = '_triptych_%_' . sanitize_key($slug);
+        $placeholders = implode(',', array_fill(0, count($post_types), '%s'));
+        $params = array_merge([$like], $post_types);
+
+        $sql = "SELECT COUNT(DISTINCT pm.post_id)
+                  FROM {$wpdb->postmeta} pm
+                  JOIN {$wpdb->posts}    p ON p.ID = pm.post_id
+                 WHERE pm.meta_key LIKE %s
+                   AND pm.meta_key NOT LIKE %s   /* skip _updated and _src_hashes sidecars */
+                   AND pm.meta_key NOT LIKE %s
+                   AND pm.meta_value <> ''
+                   AND p.post_status = 'publish'
+                   AND p.post_type IN ({$placeholders})";
+        $params = array_merge(
+            [$like, '_triptych_%_updated', '_triptych_%_src_hashes'],
+            $post_types
         );
+
+        $count = $wpdb->get_var($wpdb->prepare($sql, $params));
         return (int) $count;
     }
 
