@@ -79,15 +79,31 @@ final class Fields
     }
 
     /**
-     * Read a multilingual field with fallback to default lang, then to the native WP field.
+     * Read a multilingual field.
+     *
+     * Resolution order:
+     *   1. `_triptych_<field>_<lang>` postmeta (canonical storage)
+     *   2. Legacy multilingual postmeta — flat per-lang keys
+     *      (`<field>_cn`, `<field>_jp`, `<field>_en`) + ACF serialised
+     *      group arrays. Lets sites migrating off ACF / Polylang surface
+     *      their existing data through Triptych without a forced
+     *      bulk rewrite.
+     *   3. Same chain in the default language (for posts whose
+     *      translation is missing).
+     *   4. Native post column (post_title / post_content / post_excerpt).
      */
     public static function get(int $post_id, string $field, ?string $lang = null): string
     {
         $lang ??= Router::currentLanguage();
         $field = sanitize_key($field);
+
         $value = (string) get_post_meta($post_id, self::metaKey($field, $lang), true);
         if ($value !== '') {
             return $value;
+        }
+        $legacy = self::readLegacy($post_id, $field, $lang);
+        if ($legacy !== '') {
+            return $legacy;
         }
 
         $default = Languages::default();
@@ -95,6 +111,10 @@ final class Fields
             $value = (string) get_post_meta($post_id, self::metaKey($field, $default), true);
             if ($value !== '') {
                 return $value;
+            }
+            $legacy = self::readLegacy($post_id, $field, $default);
+            if ($legacy !== '') {
+                return $legacy;
             }
         }
 
@@ -107,6 +127,36 @@ final class Fields
                 'post_excerpt' => (string) $post->post_excerpt,
                 default => '',
             };
+        }
+        return '';
+    }
+
+    /**
+     * Look up legacy ACF / Polylang-era multilingual postmeta.
+     *
+     * Tries flat per-lang keys (`<field>_<slug>`) using both the
+     * Triptych language slug AND the legacy short code (zh→cn, ja→jp),
+     * then the ACF serialised group array under the bare field name.
+     */
+    public static function readLegacy(int $post_id, string $field, string $lang): string
+    {
+        static $shortMap = [ 'zh' => 'cn', 'ja' => 'jp', 'en' => 'en' ];
+        $slugs = array_unique([ $lang, $shortMap[$lang] ?? $lang ]);
+
+        foreach ($slugs as $slug) {
+            $flat = (string) get_post_meta($post_id, $field . '_' . $slug, true);
+            if ($flat !== '') {
+                return $flat;
+            }
+        }
+
+        $group = get_post_meta($post_id, $field, true);
+        if (is_array($group)) {
+            foreach ($slugs as $slug) {
+                if (! empty($group[$slug]) && is_string($group[$slug])) {
+                    return $group[$slug];
+                }
+            }
         }
         return '';
     }

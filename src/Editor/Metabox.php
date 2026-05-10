@@ -30,6 +30,17 @@ final class Metabox
         if ($fields === []) {
             return;
         }
+
+        // Block Editor sidebar (Editor\Sidebar) is the primary UX since
+        // v0.2.0. When Gutenberg owns the screen, the classic metabox
+        // would render a redundant panel below the editor — skip it.
+        // Classic-editor screens still get the legacy tabbed metabox.
+        if (function_exists('use_block_editor_for_post_type')
+            && use_block_editor_for_post_type($post_type)
+        ) {
+            return;
+        }
+
         add_meta_box(
             'triptych-multilingual',
             __('Triptych — Multilingual Fields', 'triptych'),
