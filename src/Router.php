@@ -37,7 +37,13 @@ final class Router
         }
 
         $uri = (string) $_SERVER['REQUEST_URI'];
-        $home_path = (string) parse_url(home_url('/'), PHP_URL_PATH);
+        // Use site_url() (unfiltered raw WP_HOME), NOT home_url() — our own
+        // PermalinkFilter rewrites home_url() to inject /<lang>/, which would
+        // make this method strip the language prefix as if it were the WP
+        // install subdir. The result was REQUEST_URI never getting normalized,
+        // every prefixed URL hitting WP's 404 handler, and redirect_canonical
+        // self-redirecting on every canonical /<lang>/<slug>/ URL.
+        $home_path = (string) parse_url(site_url('/'), PHP_URL_PATH);
         $home_path = rtrim($home_path, '/');
 
         $path = $uri;
