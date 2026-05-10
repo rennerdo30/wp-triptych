@@ -105,3 +105,35 @@
 .block-editor-block-toolbar .components-toolbar-button[aria-label*="ranslate"] {
 	color: #2563eb;
 }
+
+/* Stale-block badge — rendered above any block whose corresponding
+   source-language version has drifted since this translation was made.
+   Fires only in non-default-language view. */
+.triptych-stale-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 4px;
+	padding: 4px 8px 4px 6px;
+	background: #fff7ed;
+	border: 1px solid #fdba74;
+	border-radius: 4px;
+	font-size: 11px;
+	color: #7c2d12;
+}
+.triptych-stale-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #f59e0b;
+	box-shadow: 0 0 0 2px rgba( 245, 158, 11, 0.18 );
+}
+.triptych-stale-text {
+	font-weight: 500;
+	letter-spacing: 0.01em;
+}
+.triptych-stale-btn {
+	height: 22px !important;
+	font-size: 11px !important;
+	padding: 0 8px !important;
+}

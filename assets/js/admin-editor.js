@@ -47,10 +47,29 @@
 	const triptychState = {
 		activeLang: cfg.default,
 		postId:     0,
+		// Per-language stored snapshot of source-block hashes (captured
+		// at translate / save time). Used to mark blocks "stale" when
+		// the live source-language hash diverges.
+		storedHashes: {},   // { lang: [hash0, hash1, …] }
+		// Cached source-language tree (the default-lang content) so
+		// non-default block wrappers can pull the matching source block.
+		sourceContent: '',
+		// Indices of stale blocks for the active non-default language —
+		// recomputed by HeaderBar whenever language switches or content
+		// edits land. The block-toolbar HOC reads from here.
+		staleSet:   new Set(),
 		listeners:  new Set(),
 	};
 	function setActive( lang ) {
 		triptychState.activeLang = lang;
+		triptychState.listeners.forEach( ( fn ) => fn() );
+	}
+	function setStaleSet( indices ) {
+		triptychState.staleSet = new Set( indices );
+		triptychState.listeners.forEach( ( fn ) => fn() );
+	}
+	function setStored( lang, hashes ) {
+		triptychState.storedHashes[ lang ] = Array.isArray( hashes ) ? hashes.slice() : [];
 		triptychState.listeners.forEach( ( fn ) => fn() );
 	}
 	function onChange( fn ) {
@@ -61,6 +80,35 @@
 		const [ , force ] = useState( 0 );
 		useEffect( () => onChange( () => force( ( n ) => n + 1 ) ), [] );
 		return triptychState.activeLang;
+	}
+	function useStaleIndex( index ) {
+		const [ , force ] = useState( 0 );
+		useEffect( () => onChange( () => force( ( n ) => n + 1 ) ), [] );
+		return triptychState.staleSet.has( index );
+	}
+
+	// ── DJB2 hash, used for block-content drift detection. Cheap, no
+	// crypto deps; collisions don't matter — false positives just mean
+	// a re-translate prompt the editor can dismiss.
+	function djb2( s ) {
+		s = String( s || '' );
+		let h = 5381;
+		for ( let i = 0; i < s.length; i++ ) h = ( ( h << 5 ) + h + s.charCodeAt( i ) ) | 0;
+		return ( h >>> 0 ).toString( 36 );
+	}
+	function blockHash( block ) {
+		const def = TRANSLATABLE_BLOCKS[ block.name ];
+		if ( ! def || def.attrs.length === 0 ) return '';
+		const parts = def.attrs.map( ( k ) => block.attributes && block.attributes[ k ] || '' );
+		return djb2( block.name + '␟' + parts.join( '␟' ) );
+	}
+	function hashSourceBlocks( content ) {
+		try {
+			const blocks = parse( content || '' );
+			return blocks.map( blockHash );
+		} catch ( e ) {
+			return [];
+		}
 	}
 
 	// ── Block translatability table.
@@ -84,12 +132,12 @@
 	async function fetchState( postId ) {
 		return apiFetch( { path: `/triptych/v1/post/${ postId }` } );
 	}
-	async function saveValue( postId, field, lang, value ) {
-		return apiFetch( {
-			path: '/triptych/v1/save',
-			method: 'POST',
-			data: { post_id: postId, field, lang, value },
-		} );
+	async function saveValue( postId, field, lang, value, sourceHashes ) {
+		const data = { post_id: postId, field, lang, value };
+		if ( Array.isArray( sourceHashes ) ) {
+			data.source_hashes = sourceHashes;
+		}
+		return apiFetch( { path: '/triptych/v1/save', method: 'POST', data } );
 	}
 	async function callTranslate( from, to, text, field ) {
 		const r = await apiFetch( {
@@ -149,12 +197,51 @@
 				const data = await fetchState( postId );
 				setState( data );
 				triptychState.postId = postId;
+				// Cache stored block-hash snapshots per language so the
+				// stale-set comparator (below) and the block-toolbar HOC
+				// can read them without their own fetch round-trips.
+				const cf = data.fields && data.fields.post_content || { values: {} };
+				Object.keys( cf.values || {} ).forEach( ( lang ) => {
+					setStored( lang, ( cf.values[ lang ] || {} ).source_hashes || [] );
+				} );
 			} catch ( err ) {
 				setError( err && err.message ? err.message : String( err ) );
 			}
 		}, [ postId ] );
 
 		useEffect( () => { refresh(); }, [ refresh ] );
+
+		// Recompute the stale-block set whenever the active language
+		// changes or the live source content changes. We hash the
+		// CURRENT default-language source (held in cacheRef when a
+		// non-default lang is active) and compare element-wise against
+		// the stored hashes captured at translate time.
+		useEffect( () => {
+			if ( activeLang === cfg.default ) {
+				setStaleSet( [] );
+				triptychState.sourceContent = sourceContent;
+				return;
+			}
+			const cachedDefault = cacheRef.current[ cfg.default ];
+			const liveDefault   = cachedDefault ? cachedDefault.content : sourceContent;
+			triptychState.sourceContent = liveDefault;
+
+			const stored = triptychState.storedHashes[ activeLang ] || [];
+			const live   = hashSourceBlocks( liveDefault );
+
+			const stale = [];
+			const len = Math.max( stored.length, live.length );
+			for ( let i = 0; i < len; i++ ) {
+				if ( stored[ i ] === undefined ) {
+					// Source has more blocks than translated → those new
+					// blocks are stale (untranslated) at index i.
+					stale.push( i );
+				} else if ( stored[ i ] !== live[ i ] ) {
+					stale.push( i );
+				}
+			}
+			setStaleSet( stale );
+		}, [ activeLang, sourceContent, state ] );
 
 		// Saving in a non-default language must NOT write to post_content.
 		// We block Gutenberg's native save while non-default is active —
@@ -215,10 +302,18 @@
 					await dispatch( 'core/editor' ).savePost();
 					dispatch( 'core/editor' ).lockPostSaving( TRIPTYCH_SAVE_LOCK );
 				} else {
+					// Snapshot the source-language block hashes at save
+					// time. The user has just declared "this translation
+					// matches the current source" so we capture the live
+					// default-lang content as the canonical reference.
+					const liveSrc = ( cacheRef.current[ cfg.default ] || {} ).content || sourceContent;
+					const hashes  = hashSourceBlocks( liveSrc );
 					await Promise.all( [
-						saveValue( postId, 'post_title',   activeLang, title ),
-						saveValue( postId, 'post_content', activeLang, content ),
+						saveValue( postId, 'post_title',   activeLang, title,   hashes ),
+						saveValue( postId, 'post_content', activeLang, content, hashes ),
 					] );
+					setStored( activeLang, hashes );
+					setStaleSet( [] );
 					noticesDispatch.createNotice(
 						'success',
 						t( 'savedTranslation', 'Translation saved' ),
@@ -262,15 +357,18 @@
 					( srcContent || '' ).trim() ? callTranslate( cfg.default, target, srcContent, 'post_content' ) : Promise.resolve( '' ),
 				] );
 
+				const hashes = hashSourceBlocks( srcContent );
 				await Promise.all( [
-					tTitle   ? saveValue( postId, 'post_title',   target, tTitle )   : Promise.resolve(),
-					tContent ? saveValue( postId, 'post_content', target, tContent ) : Promise.resolve(),
+					tTitle   ? saveValue( postId, 'post_title',   target, tTitle,   hashes ) : Promise.resolve(),
+					tContent ? saveValue( postId, 'post_content', target, tContent, hashes ) : Promise.resolve(),
 				] );
+				setStored( target, hashes );
 
 				cacheRef.current[ target ] = { title: tTitle, content: tContent };
 				if ( activeLang === target ) {
 					setEditorTitle( tTitle );
 					setEditorContent( tContent );
+					setStaleSet( [] );
 				}
 				await refresh();
 				noticesDispatch.createNotice(
@@ -375,23 +473,77 @@
 		return createPortal( el( HeaderBar ), anchor );
 	}
 
-	// ── Per-block toolbar button ──────────────────────────────────
+	// ── Per-block toolbar button + stale badge ────────────────────
 	const withTriptychToolbar = createHigherOrderComponent( ( BlockEdit ) => {
 		return function TriptychBlockEdit( props ) {
-			const { name, attributes, setAttributes, isSelected } = props;
+			const { name, attributes, setAttributes, isSelected, clientId } = props;
 			const def = TRANSLATABLE_BLOCKS[ name ];
 			const activeLang = useActiveLang();
 			const [ busy, setBusy ] = useState( false );
 
-			if ( ! def || activeLang === cfg.default || ! isSelected ) {
+			// Compute this block's index inside the top-level block list
+			// so we can compare against the stored source-hash array.
+			const blockIndex = useSelect( ( s ) => {
+				if ( activeLang === cfg.default ) return -1;
+				const order = s( 'core/block-editor' ).getBlockOrder();
+				const idx = order.indexOf( clientId );
+				return idx;
+			}, [ clientId, activeLang ] );
+
+			const isStale = useStaleIndex( blockIndex );
+
+			if ( activeLang === cfg.default ) {
+				return el( BlockEdit, props );
+			}
+			if ( ! def ) {
+				// Non-translatable block (image, embed, spacer, …) — still
+				// render a stale indicator if the index drifted, but skip
+				// the translate toolbar.
+				if ( isStale && isSelected ) {
+					return el( Fragment, null,
+						el( BlockEdit, props ),
+						el( BlockControls, null,
+							el( ToolbarGroup, null,
+								el( ToolbarButton, {
+									icon:  'warning',
+									label: t( 'sourceChanged', 'Source has changed since this translation was made.' ),
+									disabled: true,
+								} )
+							)
+						)
+					);
+				}
+				return el( BlockEdit, props );
+			}
+			if ( ! isSelected && ! isStale ) {
 				return el( BlockEdit, props );
 			}
 
 			const onTranslate = async () => {
-				const sourceText = def.attrs
-					.map( ( k ) => attributes[ k ] || '' )
-					.filter( ( v ) => typeof v === 'string' && v.trim() !== '' )
-					.join( '\n' );
+				// Pull the SOURCE-language version of this block so we
+				// translate from the canonical source, not from whatever
+				// is currently in the non-default canvas.
+				let sourceText = '';
+				if ( triptychState.sourceContent && blockIndex >= 0 ) {
+					try {
+						const srcBlocks = parse( triptychState.sourceContent );
+						const srcBlock  = srcBlocks[ blockIndex ];
+						if ( srcBlock && srcBlock.name === name ) {
+							sourceText = def.attrs
+								.map( ( k ) => srcBlock.attributes && srcBlock.attributes[ k ] || '' )
+								.filter( ( v ) => typeof v === 'string' && v.trim() !== '' )
+								.join( '\n' );
+						}
+					} catch ( e ) {
+						// Fall through to attribute-based source.
+					}
+				}
+				if ( ! sourceText ) {
+					sourceText = def.attrs
+						.map( ( k ) => attributes[ k ] || '' )
+						.filter( ( v ) => typeof v === 'string' && v.trim() !== '' )
+						.join( '\n' );
+				}
 				if ( ! sourceText ) {
 					dispatch( 'core/notices' ).createNotice(
 						'info',
@@ -404,17 +556,51 @@
 				try {
 					if ( def.attrs.length === 1 ) {
 						const k = def.attrs[ 0 ];
-						const out = await callTranslate( cfg.default, activeLang, attributes[ k ] || '', 'block_' + name + '_' + k );
+						let srcVal = attributes[ k ] || '';
+						if ( triptychState.sourceContent && blockIndex >= 0 ) {
+							try {
+								const srcBlocks = parse( triptychState.sourceContent );
+								if ( srcBlocks[ blockIndex ] && srcBlocks[ blockIndex ].attributes ) {
+									srcVal = srcBlocks[ blockIndex ].attributes[ k ] || srcVal;
+								}
+							} catch ( e ) {}
+						}
+						const out = await callTranslate( cfg.default, activeLang, srcVal, 'block_' + name + '_' + k );
 						setAttributes( { [ k ]: out } );
 					} else {
 						const updates = {};
+						let srcAttrs = attributes;
+						if ( triptychState.sourceContent && blockIndex >= 0 ) {
+							try {
+								const srcBlocks = parse( triptychState.sourceContent );
+								if ( srcBlocks[ blockIndex ] && srcBlocks[ blockIndex ].attributes ) {
+									srcAttrs = srcBlocks[ blockIndex ].attributes;
+								}
+							} catch ( e ) {}
+						}
 						for ( const k of def.attrs ) {
-							const v = attributes[ k ];
+							const v = srcAttrs[ k ];
 							if ( typeof v === 'string' && v.trim() !== '' ) {
 								updates[ k ] = await callTranslate( cfg.default, activeLang, v, 'block_' + name + '_' + k );
 							}
 						}
 						setAttributes( updates );
+					}
+
+					// Refresh the stale flag for this index — current
+					// source hash now matches the freshly translated
+					// block, so drop it from the stale set.
+					if ( blockIndex >= 0 && triptychState.sourceContent ) {
+						const srcBlocks = parse( triptychState.sourceContent );
+						const live = srcBlocks.map( blockHash );
+						const stored = ( triptychState.storedHashes[ activeLang ] || [] ).slice();
+						stored[ blockIndex ] = live[ blockIndex ] || '';
+						setStored( activeLang, stored );
+						const stale = [];
+						for ( let i = 0; i < Math.max( stored.length, live.length ); i++ ) {
+							if ( stored[ i ] === undefined || stored[ i ] !== live[ i ] ) stale.push( i );
+						}
+						setStaleSet( stale );
 					}
 				} catch ( err ) {
 					const msg = err && err.message ? err.message : String( err );
@@ -429,8 +615,21 @@
 			};
 
 			return el( Fragment, null,
+				isStale && el( 'div', { className: 'triptych-stale-badge' },
+					el( 'span', { className: 'triptych-stale-dot', 'aria-hidden': true } ),
+					el( 'span', { className: 'triptych-stale-text' },
+						t( 'sourceChanged', 'Source has changed since this translation was made.' )
+					),
+					el( Button, {
+						className: 'triptych-stale-btn',
+						isSmall: true,
+						variant: 'primary',
+						isBusy:  busy,
+						onClick: onTranslate,
+					}, t( 'reTranslate', 'Re-translate' ) )
+				),
 				el( BlockEdit, props ),
-				el( BlockControls, null,
+				isSelected && el( BlockControls, null,
 					el( ToolbarGroup, null,
 						el( ToolbarButton, {
 							icon:     busy ? 'update' : 'translation',

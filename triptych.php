@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Triptych
  * Plugin URI: https://github.com/rennerdo30/wp-triptych
- * Description: Single-post multilingual editor — Block Editor language switcher in the canvas, per-block translate button, one-click DeepSeek/OpenAI translation per non-default language. One canonical post, multiple language fields, no per-language post twins.
- * Version: 0.3.0
+ * Description: Single-post multilingual editor — Block Editor language switcher in the canvas, per-block translate button, per-block source-drift detection, one-click DeepSeek/OpenAI translation per non-default language. One canonical post, multiple language fields, no per-language post twins.
+ * Version: 0.3.1
  * Author: renner.dev
  * Author URI: https://renner.dev
  * License: MIT
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('TRIPTYCH_VERSION', '0.3.0');
+define('TRIPTYCH_VERSION', '0.3.1');
 define('TRIPTYCH_FILE', __FILE__);
 define('TRIPTYCH_DIR', plugin_dir_path(__FILE__));
 define('TRIPTYCH_URL', plugin_dir_url(__FILE__));

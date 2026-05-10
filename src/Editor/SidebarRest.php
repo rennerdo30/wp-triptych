@@ -26,8 +26,9 @@ use WP_REST_Server;
  */
 final class SidebarRest
 {
-    public const NAMESPACE = 'triptych/v1';
-    public const META_UPDATED_SUFFIX = '_updated';
+    public const NAMESPACE             = 'triptych/v1';
+    public const META_UPDATED_SUFFIX   = '_updated';
+    public const META_SRC_HASHES_SUFFIX = '_src_hashes';
 
     public static function register(): void
     {
@@ -49,10 +50,15 @@ final class SidebarRest
                 current_user_can('edit_post', (int) $r['post_id']),
             'callback'            => [self::class, 'saveValue'],
             'args' => [
-                'post_id' => ['type' => 'integer', 'required' => true],
-                'field'   => ['type' => 'string',  'required' => true],
-                'lang'    => ['type' => 'string',  'required' => true],
-                'value'   => ['type' => 'string',  'required' => true],
+                'post_id'       => ['type' => 'integer', 'required' => true],
+                'field'         => ['type' => 'string',  'required' => true],
+                'lang'          => ['type' => 'string',  'required' => true],
+                'value'         => ['type' => 'string',  'required' => true],
+                // Optional: per-block source hashes captured at translate
+                // time. Stored under `_triptych_<field>_<lang>_src_hashes`
+                // and surfaced from /post/<id>; the editor compares
+                // against the live source to mark drifted blocks stale.
+                'source_hashes' => ['type' => 'array',   'required' => false, 'default' => []],
             ],
         ]);
     }
@@ -97,11 +103,17 @@ final class SidebarRest
 
                 $upat = (int) get_post_meta($post_id, $envelope_key . self::META_UPDATED_SUFFIX, true);
 
+                $hashes = get_post_meta($post_id, $envelope_key . self::META_SRC_HASHES_SUFFIX, true);
+                if (!is_array($hashes)) {
+                    $hashes = [];
+                }
+
                 $values[$lang] = [
                     'value'         => $val,
                     'updated_at'    => $upat ?: null,
                     'has_value'     => $val !== '',
                     'has_envelope'  => $envelope_val !== '',
+                    'source_hashes' => array_values(array_map('strval', $hashes)),
                 ];
             }
             $fields[$field_name] = [
@@ -151,13 +163,33 @@ final class SidebarRest
 
         Fields::set($post_id, $field, $lang, $value);
 
-        // Track when each translation was last touched so the sidebar can
+        // Track when each translation was last touched so the editor can
         // show "translated 2 days ago" / "stale, source has changed".
         $updated_key = Fields::metaKey($field, $lang) . self::META_UPDATED_SUFFIX;
         if ($value === '') {
             delete_post_meta($post_id, $updated_key);
         } else {
             update_post_meta($post_id, $updated_key, time());
+        }
+
+        // Per-block source-hash snapshot — captured at translate time so
+        // the editor can compare against live source on later loads and
+        // mark drifted blocks stale. Only persist when the caller
+        // supplied an array; an empty list means "leave existing
+        // snapshot alone" rather than "no hashes".
+        $src_hashes = $request->get_param('source_hashes');
+        $hashes_key = Fields::metaKey($field, $lang) . self::META_SRC_HASHES_SUFFIX;
+        if (is_array($src_hashes)) {
+            if ($value === '' || $src_hashes === []) {
+                delete_post_meta($post_id, $hashes_key);
+            } else {
+                $clean = array_values(array_map('strval', $src_hashes));
+                update_post_meta($post_id, $hashes_key, $clean);
+            }
+        } elseif ($value === '') {
+            // Empty value implies the translation went away — drop the
+            // hash snapshot too.
+            delete_post_meta($post_id, $hashes_key);
         }
 
         return new WP_REST_Response([
