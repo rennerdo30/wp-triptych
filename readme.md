@@ -30,7 +30,7 @@ This is opinionated. If you need fully independent slugs / categories / SEO meta
 
 ```bash
 # Inside wp-content/plugins/
-git clone https://github.com/rennerdo30/triptych.git
+git clone https://github.com/rennerdo30/wp-triptych.git
 ```
 
 Activate the plugin in **Plugins → Installed Plugins**, then visit **Settings → Triptych** to:

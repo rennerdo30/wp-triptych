@@ -4,7 +4,7 @@
     "type": "wordpress-plugin",
     "license": "MIT",
     "keywords": ["wordpress", "wordpress-plugin", "multilingual", "i18n", "translation", "openai", "ai"],
-    "homepage": "https://github.com/rennerdo30/triptych",
+    "homepage": "https://github.com/rennerdo30/wp-triptych",
     "authors": [
         {
             "name": "Renner",
