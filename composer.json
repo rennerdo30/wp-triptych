@@ -1,0 +1,41 @@
+{
+    "name": "rennerdo30/triptych",
+    "description": "Single-post multilingual editor for WordPress with inline 3-language tabs and OpenAI auto-translate.",
+    "type": "wordpress-plugin",
+    "license": "MIT",
+    "keywords": ["wordpress", "wordpress-plugin", "multilingual", "i18n", "translation", "openai", "ai"],
+    "homepage": "https://github.com/rennerdo30/triptych",
+    "authors": [
+        {
+            "name": "Renner",
+            "homepage": "https://renner.dev"
+        }
+    ],
+    "require": {
+        "php": ">=8.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Triptych\\": "src/"
+        },
+        "files": [
+            "src/api.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Triptych\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "lint": "find src -name '*.php' -exec php -l {} \\;"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}
