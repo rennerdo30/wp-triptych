@@ -11,10 +11,25 @@ namespace Triptych;
  * language value addressable from any tool that already speaks postmeta
  * (WP-CLI, WP REST API, MySQL backups), while remaining invisible to
  * WordPress core's main fields.
+ *
+ * Supported `type` values:
+ *   - text      single-line input
+ *   - textarea  multi-line input
+ *   - wysiwyg   rich-text editor
+ *   - repeater  per-row UI (add/remove/drag-reorder) that serializes back
+ *               to a single string under the same postmeta key. Each row
+ *               is rendered as N inline inputs (one per declared sub-field)
+ *               joined by a separator (default `|`); rows are joined by
+ *               newlines. Storage shape stays compatible with consumers
+ *               that read the raw string with explode("\n") + explode("|").
+ *
+ * Repeater `args` extras:
+ *   - subfields  array<int, array{key:string, label:string, placeholder?:string, width?:string}>
+ *   - separator  string (single char), default '|'
  */
 final class Fields
 {
-    /** @var array<string, array{type:string, post_types:array<int,string>, label:string}> */
+    /** @var array<string, array{type:string, post_types:array<int,string>, label:string, subfields:array<int, array<string,string>>, separator:string}> */
     private static array $registry = [];
 
     /**
@@ -28,7 +43,7 @@ final class Fields
         }
 
         $type = isset($args['type']) ? (string) $args['type'] : 'text';
-        if (!in_array($type, ['text', 'textarea', 'wysiwyg'], true)) {
+        if (!in_array($type, ['text', 'textarea', 'wysiwyg', 'repeater'], true)) {
             $type = 'text';
         }
 
@@ -44,10 +59,41 @@ final class Fields
 
         $label = isset($args['label']) ? (string) $args['label'] : ucwords(str_replace('_', ' ', $field));
 
+        $subfields = [];
+        if ($type === 'repeater' && isset($args['subfields']) && is_array($args['subfields'])) {
+            foreach ($args['subfields'] as $sf) {
+                if (!is_array($sf) || empty($sf['key'])) {
+                    continue;
+                }
+                $sk = sanitize_key((string) $sf['key']);
+                if ($sk === '') {
+                    continue;
+                }
+                $subfields[] = [
+                    'key'         => $sk,
+                    'label'       => isset($sf['label']) ? (string) $sf['label'] : ucwords(str_replace('_', ' ', $sk)),
+                    'placeholder' => isset($sf['placeholder']) ? (string) $sf['placeholder'] : '',
+                    'width'       => isset($sf['width']) ? (string) $sf['width'] : '',
+                ];
+            }
+        }
+        // Repeater with no declared sub-fields would render nothing useful,
+        // so default to a single full-width "value" column.
+        if ($type === 'repeater' && $subfields === []) {
+            $subfields = [['key' => 'value', 'label' => __('Value', 'triptych'), 'placeholder' => '', 'width' => '']];
+        }
+
+        $separator = isset($args['separator']) ? (string) $args['separator'] : '|';
+        if ($separator === '') {
+            $separator = '|';
+        }
+
         self::$registry[$field] = [
-            'type' => $type,
+            'type'       => $type,
             'post_types' => $post_types,
-            'label' => $label,
+            'label'      => $label,
+            'subfields'  => $subfields,
+            'separator'  => $separator,
         ];
     }
 
@@ -134,9 +180,17 @@ final class Fields
     /**
      * Look up legacy ACF / Polylang-era multilingual postmeta.
      *
-     * Tries flat per-lang keys (`<field>_<slug>`) using both the
-     * Triptych language slug AND the legacy short code (zh→cn, ja→jp),
-     * then the ACF serialised group array under the bare field name.
+     * Tries:
+     *   1. Flat per-lang keys (`<field>_<slug>`) — using BOTH the
+     *      Triptych slug AND the legacy short code (zh→cn, ja→jp).
+     *   2. ACF-style serialised group array at the bare `<field>` key.
+     *   3. A bare-key plain string as the source-language value —
+     *      catches single-language plugins (or older seed scripts) that
+     *      stored content directly as `<field> = "<source content>"`
+     *      without a language suffix or grouping. Only returned when
+     *      the requested $lang is the default — non-default langs
+     *      should NOT inherit the source string verbatim, that's the
+     *      job of the get() default-lang fallback step.
      */
     public static function readLegacy(int $post_id, string $field, string $lang): string
     {
@@ -150,13 +204,15 @@ final class Fields
             }
         }
 
-        $group = get_post_meta($post_id, $field, true);
-        if (is_array($group)) {
+        $bare = get_post_meta($post_id, $field, true);
+        if (is_array($bare)) {
             foreach ($slugs as $slug) {
-                if (! empty($group[$slug]) && is_string($group[$slug])) {
-                    return $group[$slug];
+                if (! empty($bare[$slug]) && is_string($bare[$slug])) {
+                    return $bare[$slug];
                 }
             }
+        } elseif (is_string($bare) && $bare !== '' && $lang === Languages::default()) {
+            return $bare;
         }
         return '';
     }

@@ -1,0 +1,214 @@
+/* Triptych — repeater field UI in the structured-fields metabox. */
+
+.triptych-mb-structured .triptych-field-repeater {
+	border: 1px solid #dcdcde;
+	border-radius: 6px;
+	padding: 14px 16px 16px;
+	margin: 0 0 16px;
+	background: #fff;
+}
+
+.triptych-mb-structured .triptych-field-repeater > legend {
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: #1d2327;
+	padding: 0 6px;
+}
+
+.triptych-mb-structured .triptych-tabs {
+	display: inline-flex;
+	gap: 0;
+	margin: 0 0 12px;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+	overflow: hidden;
+	background: #f6f7f7;
+}
+
+.triptych-mb-structured .triptych-tab {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 12px;
+	border: 0;
+	background: transparent;
+	font-size: 12px;
+	color: #50575e;
+	cursor: pointer;
+	border-right: 1px solid #c3c4c7;
+}
+.triptych-mb-structured .triptych-tab:last-child {
+	border-right: 0;
+}
+.triptych-mb-structured .triptych-tab:hover {
+	background: #fff;
+	color: #1d2327;
+}
+.triptych-mb-structured .triptych-tab.is-active {
+	background: #fff;
+	color: #1d2327;
+	font-weight: 600;
+}
+
+.triptych-mb-structured .triptych-tab-slug {
+	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	font-size: 10px;
+	letter-spacing: 0.1em;
+	font-weight: 700;
+	color: inherit;
+	opacity: 0.85;
+}
+
+.triptych-mb-structured .triptych-pane[hidden] {
+	display: none !important;
+}
+
+/* ── Rows ────────────────────────────────────────────────────────── */
+
+.triptych-rep-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.triptych-rep-empty {
+	margin: 0;
+	padding: 14px;
+	border: 1px dashed #c3c4c7;
+	border-radius: 4px;
+	color: #646970;
+	background: #f6f7f7;
+	text-align: center;
+	font-size: 13px;
+}
+
+.triptych-rep-row {
+	display: flex;
+	align-items: stretch;
+	gap: 8px;
+	padding: 6px 8px;
+	border: 1px solid #dcdcde;
+	border-radius: 4px;
+	background: #fafafa;
+	transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.triptych-rep-row:hover {
+	border-color: #8c8f94;
+	background: #fff;
+}
+.triptych-rep-row.is-dragging {
+	opacity: 0.5;
+}
+.triptych-rep-row.is-drop-above {
+	border-top: 2px solid #2271b1;
+}
+.triptych-rep-row.is-drop-below {
+	border-bottom: 2px solid #2271b1;
+}
+
+.triptych-rep-handle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	color: #8c8f94;
+	cursor: grab;
+	user-select: none;
+	font-size: 14px;
+	letter-spacing: -2px;
+	font-weight: 700;
+}
+.triptych-rep-handle:active {
+	cursor: grabbing;
+}
+
+.triptych-rep-fields {
+	display: flex;
+	flex: 1;
+	gap: 8px;
+	align-items: stretch;
+}
+
+.triptych-rep-field {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	flex: 1;
+	min-width: 0;
+}
+
+.triptych-rep-fieldlabel {
+	font-size: 10px;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: #646970;
+	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.triptych-rep-input {
+	width: 100%;
+	min-height: 30px;
+	padding: 4px 8px;
+	border: 1px solid #dcdcde;
+	border-radius: 3px;
+	background: #fff;
+	font-size: 13px;
+	line-height: 1.4;
+	color: #1d2327;
+}
+.triptych-rep-input:focus {
+	border-color: #2271b1;
+	box-shadow: 0 0 0 1px #2271b1;
+	outline: none;
+}
+
+.triptych-rep-remove {
+	align-self: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	background: transparent;
+	color: #b32d2e;
+	font-size: 18px;
+	line-height: 1;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.triptych-rep-remove:hover {
+	background: #fcebec;
+	border-color: #d63638;
+}
+.triptych-rep-remove:focus {
+	outline: 2px solid #2271b1;
+	outline-offset: 1px;
+}
+
+.triptych-rep-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.triptych-rep-actions .triptych-status {
+	margin-left: auto;
+	font-size: 12px;
+	color: #50575e;
+	min-height: 16px;
+}
+
+/* Hide the shadow textarea but keep it focusable for the form submit. */
+.triptych-rep-shadow {
+	position: absolute !important;
+	width: 1px !important;
+	height: 1px !important;
+	overflow: hidden !important;
+	clip: rect(0 0 0 0) !important;
+	white-space: nowrap !important;
+}

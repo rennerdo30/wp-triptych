@@ -31,29 +31,69 @@ final class Metabox
             return;
         }
 
-        // Block Editor sidebar (Editor\Sidebar) is the primary UX since
-        // v0.2.0. When Gutenberg owns the screen, the classic metabox
-        // would render a redundant panel below the editor — skip it.
-        // Classic-editor screens still get the legacy tabbed metabox.
-        if (function_exists('use_block_editor_for_post_type')
-            && use_block_editor_for_post_type($post_type)
-        ) {
-            return;
+        $isBlockEditor = function_exists('use_block_editor_for_post_type')
+            && use_block_editor_for_post_type($post_type);
+
+        // Split fields into "scalar" (text/textarea/wysiwyg) and "structured"
+        // (repeater). On the Block Editor screen the scalar fields are
+        // already covered by the in-canvas language UI (admin-editor.js
+        // swaps post_title / post_content / etc. when the language pill
+        // changes), so we suppress the redundant scalar metabox there.
+        // Repeater fields have no in-canvas equivalent and therefore
+        // ALWAYS render via this metabox — Gutenberg shows registered
+        // metaboxes in a "Meta boxes" pane below the canvas, and the
+        // legacy metabox-bridge handles save_post submission.
+        $scalars = [];
+        $structured = [];
+        foreach ($fields as $key => $def) {
+            if (($def['type'] ?? 'text') === 'repeater') {
+                $structured[$key] = $def;
+            } else {
+                $scalars[$key] = $def;
+            }
         }
 
-        add_meta_box(
-            'triptych-multilingual',
-            __('Triptych — Multilingual Fields', 'triptych'),
-            [self::class, 'render'],
-            $post_type,
-            'normal',
-            'high'
-        );
+        if ($scalars !== [] && !$isBlockEditor) {
+            add_meta_box(
+                'triptych-multilingual',
+                __('Triptych — Multilingual Fields', 'triptych'),
+                [self::class, 'renderScalars'],
+                $post_type,
+                'normal',
+                'high'
+            );
+        }
+
+        if ($structured !== []) {
+            add_meta_box(
+                'triptych-multilingual-structured',
+                __('Triptych — Structured Fields', 'triptych'),
+                [self::class, 'renderStructured'],
+                $post_type,
+                'normal',
+                'high'
+            );
+        }
     }
 
+    /**
+     * Public alias for backward-compatibility. Older callers (or sites
+     * that hot-link to ::render) still get the scalar tabbed metabox.
+     */
     public static function render(\WP_Post $post): void
     {
-        $fields = Fields::forPostType($post->post_type);
+        self::renderScalars($post);
+    }
+
+    public static function renderScalars(\WP_Post $post): void
+    {
+        $allFields = Fields::forPostType($post->post_type);
+        $fields = [];
+        foreach ($allFields as $k => $def) {
+            if (($def['type'] ?? 'text') !== 'repeater') {
+                $fields[$k] = $def;
+            }
+        }
         $languages = Languages::all();
         $default = Languages::default();
         wp_nonce_field(self::NONCE, self::NONCE);
@@ -134,6 +174,124 @@ final class Metabox
         <?php
     }
 
+    /**
+     * Render structured (repeater) multilingual fields.
+     *
+     * Each field gets:
+     *   - One language-tab strip (zh / ja / en).
+     *   - One row container per language.
+     *   - A hidden textarea per language whose value mirrors the
+     *     newline-joined `A | B | C` shorthand on every row mutation.
+     *
+     * The actual row UI (add/remove/drag-reorder, sub-field inputs) is
+     * built by `assets/js/admin-metabox-repeater.js`. PHP just emits the
+     * skeleton + a JSON config blob the JS hydrates from.
+     */
+    public static function renderStructured(\WP_Post $post): void
+    {
+        $allFields = Fields::forPostType($post->post_type);
+        $fields = [];
+        foreach ($allFields as $k => $def) {
+            if (($def['type'] ?? 'text') === 'repeater') {
+                $fields[$k] = $def;
+            }
+        }
+        if ($fields === []) {
+            return;
+        }
+        $languages = Languages::all();
+        $default = Languages::default();
+        wp_nonce_field(self::NONCE, self::NONCE);
+        ?>
+        <div class="triptych-mb triptych-mb-structured" data-default-lang="<?php echo esc_attr($default); ?>">
+            <?php foreach ($fields as $key => $def):
+                $separator = $def['separator'] ?? '|';
+                $subfields = $def['subfields'] ?? [];
+                $field_dom_id = 'triptych-rep-' . $key;
+                $config = [
+                    'field'     => $key,
+                    'separator' => $separator,
+                    'subfields' => array_values($subfields),
+                    'languages' => array_keys($languages),
+                    'default'   => $default,
+                    'i18n'      => [
+                        'addRow'    => __('Add row', 'triptych'),
+                        'removeRow' => __('Remove row', 'triptych'),
+                        'dragRow'   => __('Drag to reorder', 'triptych'),
+                        'noRows'    => __('No rows yet — click "Add row" to start.', 'triptych'),
+                    ],
+                ];
+            ?>
+                <fieldset class="triptych-field triptych-field-repeater"
+                          data-field="<?php echo esc_attr($key); ?>"
+                          id="<?php echo esc_attr($field_dom_id); ?>">
+                    <legend><?php echo esc_html($def['label']); ?></legend>
+
+                    <div class="triptych-tabs" role="tablist">
+                        <?php foreach ($languages as $slug => $label): ?>
+                            <button type="button"
+                                    class="triptych-tab<?php echo $slug === $default ? ' is-active' : ''; ?>"
+                                    role="tab"
+                                    data-lang="<?php echo esc_attr($slug); ?>"
+                                    aria-selected="<?php echo $slug === $default ? 'true' : 'false'; ?>">
+                                <span class="triptych-tab-slug"><?php echo esc_html(strtoupper($slug)); ?></span>
+                                <span class="triptych-tab-label"><?php echo esc_html($label); ?></span>
+                            </button>
+                        <?php endforeach; ?>
+                    </div>
+
+                    <?php foreach ($languages as $slug => $label):
+                        $meta_key = Fields::metaKey($key, $slug);
+                        $value = (string) get_post_meta($post->ID, $meta_key, true);
+                        $hidden = $slug === $default ? '' : ' hidden';
+                    ?>
+                        <div class="triptych-pane<?php echo esc_attr($hidden); ?>"
+                             data-lang="<?php echo esc_attr($slug); ?>">
+                            <div class="triptych-rep-rows" data-lang="<?php echo esc_attr($slug); ?>"></div>
+                            <div class="triptych-rep-actions">
+                                <button type="button"
+                                        class="button button-secondary triptych-rep-add"
+                                        data-lang="<?php echo esc_attr($slug); ?>">
+                                    + <?php esc_html_e('Add row', 'triptych'); ?>
+                                </button>
+                                <?php if ($slug !== $default): ?>
+                                    <button type="button"
+                                            class="button triptych-rep-translate"
+                                            data-from="<?php echo esc_attr($default); ?>"
+                                            data-to="<?php echo esc_attr($slug); ?>"
+                                            data-field="<?php echo esc_attr($key); ?>">
+                                        <?php
+                                        printf(
+                                            /* translators: 1: source lang, 2: target lang */
+                                            esc_html__('AI translate %1$s → %2$s', 'triptych'),
+                                            esc_html(strtoupper($default)),
+                                            esc_html(strtoupper($slug))
+                                        );
+                                        ?>
+                                    </button>
+                                <?php endif; ?>
+                                <span class="triptych-status" aria-live="polite"></span>
+                            </div>
+                            <textarea
+                                class="triptych-rep-shadow"
+                                name="<?php echo esc_attr("triptych[{$key}][{$slug}]"); ?>"
+                                data-field="<?php echo esc_attr($key); ?>"
+                                data-lang="<?php echo esc_attr($slug); ?>"
+                                aria-hidden="true"
+                                tabindex="-1"
+                                hidden><?php echo esc_textarea($value); ?></textarea>
+                        </div>
+                    <?php endforeach; ?>
+
+                    <script type="application/json" class="triptych-rep-config">
+                        <?php echo wp_json_encode($config); ?>
+                    </script>
+                </fieldset>
+            <?php endforeach; ?>
+        </div>
+        <?php
+    }
+
     public static function save(int $post_id, \WP_Post $post): void
     {
         if (!isset($_POST[self::NONCE]) || !wp_verify_nonce((string) $_POST[self::NONCE], self::NONCE)) {
@@ -164,9 +322,26 @@ final class Metabox
                     continue;
                 }
                 $raw = wp_unslash((string) $value);
-                $sanitized = $fields[$field]['type'] === 'text'
-                    ? sanitize_text_field($raw)
-                    : wp_kses_post($raw);
+                $type = $fields[$field]['type'] ?? 'text';
+                if ($type === 'text') {
+                    $sanitized = sanitize_text_field($raw);
+                } elseif ($type === 'repeater') {
+                    // Repeater shadow value is a newline-joined string of
+                    // separator-delimited cells. Sanitize per-line, drop
+                    // empty lines, and re-join. Keeps the canonical shape
+                    // the consumer parses against.
+                    $lines = preg_split('/\r?\n/', $raw) ?: [];
+                    $clean = [];
+                    foreach ($lines as $line) {
+                        $line = sanitize_text_field((string) $line);
+                        if ($line !== '') {
+                            $clean[] = $line;
+                        }
+                    }
+                    $sanitized = implode("\n", $clean);
+                } else {
+                    $sanitized = wp_kses_post($raw);
+                }
                 Fields::set($post_id, $field, $lang, $sanitized);
             }
         }

@@ -27,6 +27,10 @@ final class AssetsEnqueue
     public static function register(): void
     {
         add_action('enqueue_block_editor_assets', [self::class, 'enqueueBlock']);
+        // Repeater metabox runs on every post-edit screen (classic AND
+        // block editor). Hook the universal admin enqueue so both surfaces
+        // get the row-UI script.
+        add_action('admin_enqueue_scripts', [self::class, 'enqueueRepeater']);
     }
 
     public static function enqueueBlock(): void
@@ -96,5 +100,62 @@ final class AssetsEnqueue
                 'untranslatable'   => __('This block has no translatable text.', 'triptych'),
             ],
         ]);
+
+        // If the post type also has any structured (repeater) fields,
+        // push the repeater UI script onto the same screen. Gutenberg
+        // renders metaboxes in a hidden meta-box pane below the canvas;
+        // the repeater script binds to those DOM nodes there.
+        self::maybeEnqueueRepeaterAssets($post_type);
+    }
+
+    /**
+     * Enqueue the repeater UI on classic-editor post screens (and as a
+     * fallback for block-editor screens whose `enqueue_block_editor_assets`
+     * fires too early to detect the post type — `admin_enqueue_scripts`
+     * always sees the resolved screen).
+     *
+     * Cheap idempotent: wp_enqueue_script de-duplicates by handle so
+     * calling it twice (once here, once from enqueueBlock) is a no-op.
+     */
+    public static function enqueueRepeater(string $hook = ''): void
+    {
+        if (!in_array($hook, ['post.php', 'post-new.php'], true)) {
+            return;
+        }
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        $post_type = $screen ? (string) $screen->post_type : '';
+        self::maybeEnqueueRepeaterAssets($post_type);
+    }
+
+    private static function maybeEnqueueRepeaterAssets(string $post_type): void
+    {
+        $hasRepeater = false;
+        foreach (Fields::all() as $def) {
+            if (($def['type'] ?? '') !== 'repeater') {
+                continue;
+            }
+            $allowed = (array) ($def['post_types'] ?? []);
+            if ($allowed === [] || in_array($post_type, $allowed, true)) {
+                $hasRepeater = true;
+                break;
+            }
+        }
+        if (!$hasRepeater) {
+            return;
+        }
+
+        wp_enqueue_script(
+            'triptych-repeater',
+            TRIPTYCH_URL . 'assets/js/admin-metabox-repeater.js',
+            ['wp-api-fetch'],
+            TRIPTYCH_VERSION,
+            true
+        );
+        wp_enqueue_style(
+            'triptych-repeater',
+            TRIPTYCH_URL . 'assets/css/admin-metabox-repeater.css',
+            [],
+            TRIPTYCH_VERSION
+        );
     }
 }
