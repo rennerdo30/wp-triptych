@@ -4,14 +4,22 @@ declare(strict_types=1);
 
 namespace Triptych\Admin;
 
+use Triptych\Fields;
 use Triptych\Languages;
 use Triptych\Translation\Translator;
 
 /**
- * Settings → Triptych. Languages, default language, and AI endpoint config.
+ * Triptych → top-level admin menu.
+ *
+ * Adds an "Overview" panel summarising configured languages, per-language
+ * translation coverage across the canonical post storage, the active AI
+ * endpoint/model (key redacted), and the registered Triptych fields with
+ * their post-type assignments. The original settings form lives below.
  */
 final class SettingsPage
 {
+    private const SLUG = 'triptych';
+
     public static function register(): void
     {
         add_action('admin_menu', [self::class, 'menu']);
@@ -21,12 +29,14 @@ final class SettingsPage
 
     public static function menu(): void
     {
-        add_options_page(
+        add_menu_page(
             __('Triptych', 'triptych'),
             __('Triptych', 'triptych'),
             'manage_options',
-            'triptych',
-            [self::class, 'render']
+            self::SLUG,
+            [self::class, 'render'],
+            'dashicons-translation',
+            80
         );
     }
 
@@ -76,11 +86,15 @@ final class SettingsPage
         $configured = Languages::all();
         ?>
         <div class="wrap">
-            <h1><?php esc_html_e('Triptych — Multilingual Settings', 'triptych'); ?></h1>
+            <h1><?php esc_html_e('Triptych — Multilingual', 'triptych'); ?></h1>
             <p class="description">
-                <?php esc_html_e('One canonical post, multiple language fields. Configure your languages, default, and AI translation endpoint here.', 'triptych'); ?>
+                <?php esc_html_e('One canonical post, multiple language fields. AI translation per non-default language, no per-language post twins.', 'triptych'); ?>
             </p>
 
+            <?php self::renderOverview($configured, $default, $endpoint, $model, $masked_key); ?>
+
+            <hr>
+            <h2 class="title"><?php esc_html_e('Settings', 'triptych'); ?></h2>
             <form method="post" action="options.php">
                 <?php settings_fields('triptych'); ?>
                 <table class="form-table" role="presentation">
@@ -180,6 +194,136 @@ final class SettingsPage
             </script>
         </div>
         <?php
+    }
+
+    /**
+     * Overview panel: configured languages, translation coverage per
+     * language (computed from `_triptych_post_title_<lang>` postmeta),
+     * AI endpoint/model + redacted key, registered fields list.
+     *
+     * @param array<string, string> $configured
+     */
+    private static function renderOverview(array $configured, string $default, string $endpoint, string $model, string $masked_key): void
+    {
+        $coverage = self::languageCoverage(array_keys($configured), $default);
+        $endpoint_display = $endpoint !== '' ? $endpoint : __('(not configured)', 'triptych');
+        $key_display = $masked_key !== ''
+            ? $masked_key
+            : '<em>' . esc_html__('(not set)', 'triptych') . '</em>';
+        $fields = Fields::all();
+
+        echo '<h2 class="title">' . esc_html__('Overview', 'triptych') . '</h2>';
+
+        echo '<table class="widefat striped" style="max-width:920px;"><tbody>';
+        echo '<tr><th scope="row" style="width:240px;">' . esc_html__('Languages', 'triptych') . '</th><td>';
+        $chips = [];
+        foreach ($configured as $slug => $label) {
+            $is_default = $slug === $default;
+            $count = $coverage[$slug] ?? 0;
+            $chip = sprintf(
+                '<span style="display:inline-block;margin:2px 6px 2px 0;padding:3px 10px;background:%s;color:%s;border-radius:12px;font-size:12px;"><strong>%s</strong> %s · %d %s</span>',
+                $is_default ? '#2271b1' : '#f0f0f1',
+                $is_default ? '#fff' : '#1d2327',
+                esc_html(strtoupper($slug)),
+                esc_html($label),
+                (int) $count,
+                esc_html__('posts', 'triptych')
+            );
+            $chips[] = $chip;
+        }
+        echo wp_kses_post(implode(' ', $chips));
+        echo '<p class="description" style="margin-top:6px;">' . esc_html__('Counts reflect canonical posts with at least one stored value in `_triptych_post_title_<lang>` (or its legacy fallbacks). The default language counts every published post.', 'triptych') . '</p>';
+        echo '</td></tr>';
+
+        echo '<tr><th scope="row">' . esc_html__('AI endpoint', 'triptych') . '</th><td><code>' . esc_html($endpoint_display) . '</code></td></tr>';
+        echo '<tr><th scope="row">' . esc_html__('Model', 'triptych') . '</th><td><code>' . esc_html($model !== '' ? $model : '(not set)') . '</code></td></tr>';
+        echo '<tr><th scope="row">' . esc_html__('API key', 'triptych') . '</th><td>' . wp_kses_post($key_display) . '</td></tr>';
+        echo '<tr><th scope="row">' . esc_html__('Last translated', 'triptych') . '</th><td><em>' . esc_html__('Per-translation timestamps are not yet tracked. Use the "Test translation" panel below to verify the endpoint is reachable.', 'triptych') . '</em></td></tr>';
+
+        $tour_url = 'https://github.com/rennerdo30/wp-triptych#multilingual-sidebar';
+        echo '<tr><th scope="row">' . esc_html__('Editor tour', 'triptych') . '</th><td><a href="' . esc_url($tour_url) . '" target="_blank" rel="noopener noreferrer">' . esc_html__('Multilingual sidebar walkthrough', 'triptych') . ' →</a></td></tr>';
+        echo '</tbody></table>';
+
+        echo '<h3 style="margin-top:24px;">' . esc_html__('Registered Triptych fields', 'triptych') . '</h3>';
+        if ($fields === []) {
+            echo '<p class="description">' . esc_html__('No fields registered — Triptych boots post_title and post_content automatically; these will appear once init has fired.', 'triptych') . '</p>';
+        } else {
+            echo '<table class="widefat striped" style="max-width:920px;"><thead><tr>';
+            echo '<th style="width:240px;">' . esc_html__('Field', 'triptych') . '</th>';
+            echo '<th style="width:140px;">' . esc_html__('Type', 'triptych') . '</th>';
+            echo '<th>' . esc_html__('Label', 'triptych') . '</th>';
+            echo '<th>' . esc_html__('Post types', 'triptych') . '</th>';
+            echo '</tr></thead><tbody>';
+            foreach ($fields as $name => $def) {
+                $type = (string) ($def['type'] ?? 'text');
+                $label = (string) ($def['label'] ?? $name);
+                $pts = $def['post_types'] ?? [];
+                $pt_display = (is_array($pts) && $pts !== [])
+                    ? implode(', ', array_map(static fn ($p) => (string) $p, $pts))
+                    : __('(all)', 'triptych');
+                echo '<tr>';
+                echo '<td><code>' . esc_html($name) . '</code></td>';
+                echo '<td><code>' . esc_html($type) . '</code></td>';
+                echo '<td>' . esc_html($label) . '</td>';
+                echo '<td>' . esc_html($pt_display) . '</td>';
+                echo '</tr>';
+            }
+            echo '</tbody></table>';
+        }
+    }
+
+    /**
+     * Compute how many published posts have a stored Triptych title per
+     * language. The default language counts every published post (the
+     * source of truth lives in post_title for that slug).
+     *
+     * Bounded at 5,000 posts and cached for 5 minutes via a transient
+     * keyed off the languages list — site editors care about ballpark
+     * coverage, not real-time numbers.
+     *
+     * @param string[] $slugs
+     * @return array<string, int>
+     */
+    private static function languageCoverage(array $slugs, string $default): array
+    {
+        $cache_key = 'triptych_overview_coverage_' . md5(implode(',', $slugs) . '|' . $default);
+        $cached = get_transient($cache_key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $totals = [];
+        $total_published = (int) array_sum((array) wp_count_posts('post')) +
+            (int) array_sum((array) wp_count_posts('page'));
+
+        foreach ($slugs as $slug) {
+            if ($slug === $default) {
+                $totals[$slug] = $total_published;
+                continue;
+            }
+            $totals[$slug] = self::countPostsWithLang($slug);
+        }
+
+        set_transient($cache_key, $totals, 5 * MINUTE_IN_SECONDS);
+        return $totals;
+    }
+
+    /**
+     * Count distinct posts that have any non-empty Triptych title for
+     * the given language slug. Uses one direct SQL query for speed —
+     * the postmeta key prefix is fully constrained.
+     */
+    private static function countPostsWithLang(string $slug): int
+    {
+        global $wpdb;
+        $meta_key = '_triptych_post_title_' . sanitize_key($slug);
+        $count = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value <> ''",
+                $meta_key
+            )
+        );
+        return (int) $count;
     }
 
     public static function ajaxTest(): void
