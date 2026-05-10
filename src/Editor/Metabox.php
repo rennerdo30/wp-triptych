@@ -243,6 +243,15 @@ final class Metabox
                     <?php foreach ($languages as $slug => $label):
                         $meta_key = Fields::metaKey($key, $slug);
                         $value = (string) get_post_meta($post->ID, $meta_key, true);
+                        // Fall back through Fields::readLegacy so editors
+                        // see schedule rows that were imported under the
+                        // bare `<field>` postmeta key (older seeders, ACF
+                        // group arrays, flat per-lang keys). Without this
+                        // the repeater hydrates empty even though the
+                        // front-end already renders the data correctly.
+                        if ($value === '') {
+                            $value = Fields::readLegacy($post->ID, $key, $slug);
+                        }
                         $hidden = $slug === $default ? '' : ' hidden';
                     ?>
                         <div class="triptych-pane<?php echo esc_attr($hidden); ?>"
