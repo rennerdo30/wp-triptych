@@ -66,9 +66,9 @@ final class Translator
      */
     public static function translate(string $from, string $to, string $text, string $field = ''): string|WP_Error
     {
-        $endpoint = rtrim((string) get_option('triptych_endpoint', 'https://api.openai.com/v1'), '/');
+        $endpoint = rtrim((string) get_option('triptych_endpoint', 'https://api.deepseek.com/v1'), '/');
         $api_key = (string) get_option('triptych_api_key', '');
-        $model = (string) get_option('triptych_model', 'gpt-4o-mini');
+        $model = (string) get_option('triptych_model', 'deepseek-v4-pro');
 
         if ($endpoint === '') {
             return new WP_Error('triptych_no_endpoint', __('Translation endpoint is not configured.', 'triptych'), ['status' => 500]);

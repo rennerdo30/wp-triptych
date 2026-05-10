@@ -45,7 +45,7 @@ final class SettingsPage
         register_setting('triptych', 'triptych_endpoint', [
             'type' => 'string',
             'sanitize_callback' => 'esc_url_raw',
-            'default' => 'https://api.openai.com/v1',
+            'default' => 'https://api.deepseek.com/v1',
         ]);
         register_setting('triptych', 'triptych_api_key', [
             'type' => 'string',
@@ -56,7 +56,7 @@ final class SettingsPage
         register_setting('triptych', 'triptych_model', [
             'type' => 'string',
             'sanitize_callback' => static fn($v) => sanitize_text_field((string) $v),
-            'default' => 'gpt-4o-mini',
+            'default' => 'deepseek-v4-pro',
         ]);
     }
 
@@ -67,9 +67,9 @@ final class SettingsPage
         }
         $languages = (string) get_option('triptych_languages', 'zh:中文,ja:日本語,en:English');
         $default = (string) get_option('triptych_default_language', 'en');
-        $endpoint = (string) get_option('triptych_endpoint', 'https://api.openai.com/v1');
+        $endpoint = (string) get_option('triptych_endpoint', 'https://api.deepseek.com/v1');
         $api_key = (string) get_option('triptych_api_key', '');
-        $model = (string) get_option('triptych_model', 'gpt-4o-mini');
+        $model = (string) get_option('triptych_model', 'deepseek-v4-pro');
 
         $masked_key = $api_key === '' ? '' : str_repeat('•', max(8, min(24, strlen($api_key))));
         Languages::flushCache();
@@ -119,7 +119,7 @@ final class SettingsPage
                             <input type="url" id="triptych_endpoint" name="triptych_endpoint"
                                    value="<?php echo esc_attr($endpoint); ?>" class="regular-text" />
                             <p class="description">
-                                <?php esc_html_e('OpenAI-compatible base URL. Examples: https://api.openai.com/v1, https://api.anthropic.com/v1, http://localhost:11434/v1 (Ollama).', 'triptych'); ?>
+                                <?php esc_html_e('OpenAI-compatible base URL. Examples: https://api.deepseek.com/v1 (default), https://api.openai.com/v1, http://localhost:11434/v1 (Ollama).', 'triptych'); ?>
                             </p>
                         </td>
                     </tr>
