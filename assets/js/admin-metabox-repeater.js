@@ -264,10 +264,18 @@
 		renderRow( lang, cells, rowIndex ) {
 			const inputs = this.subfields.map( ( sf, i ) => {
 				const value = cells[ i ] != null ? String( cells[ i ] ) : '';
-				const widthAttr = sf.width ? { style: 'flex: ' + sf.width + ';' } : {};
-				return el( 'label', { className: 'triptych-rep-field' },
+				// `width` hint from the field schema is the `flex:` shorthand
+				// for the COLUMN. The flex child of `.triptych-rep-fields` is
+				// the wrapping `.triptych-rep-field` <label> (not the inner
+				// input), so the style must land on the label or it has no
+				// effect on column width distribution.
+				const fieldAttrs = { className: 'triptych-rep-field' };
+				if ( sf.width ) {
+					fieldAttrs.style = 'flex: ' + sf.width + ';';
+				}
+				return el( 'label', fieldAttrs,
 					el( 'span', { className: 'triptych-rep-fieldlabel' }, sf.label || sf.key ),
-					el( 'input', Object.assign( {
+					el( 'input', {
 						type: 'text',
 						className: 'triptych-rep-input',
 						value: value,
@@ -277,7 +285,7 @@
 							this.rowsByLang[ lang ][ rowIndex ][ i ] = e.target.value;
 							this.writeShadow( lang );
 						},
-					}, widthAttr ) )
+					} )
 				);
 			} );
 

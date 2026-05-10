@@ -86,7 +86,7 @@
 
 .triptych-rep-row {
 	display: flex;
-	align-items: stretch;
+	align-items: center;
 	gap: 8px;
 	padding: 6px 8px;
 	border: 1px solid #dcdcde;
@@ -112,7 +112,9 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	flex: 0 0 18px;
 	width: 18px;
+	min-height: 32px;
 	color: #8c8f94;
 	cursor: grab;
 	user-select: none;
@@ -126,49 +128,72 @@
 
 .triptych-rep-fields {
 	display: flex;
-	flex: 1;
+	flex: 1 1 auto;
 	gap: 8px;
-	align-items: stretch;
+	align-items: center;
+	min-width: 0;
 }
 
 .triptych-rep-field {
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
-	flex: 1;
+	gap: 2px;
+	flex: 1 1 auto;
 	min-width: 0;
+	margin: 0;
 }
 
 .triptych-rep-fieldlabel {
 	font-size: 10px;
-	letter-spacing: 0.1em;
+	letter-spacing: 0.06em;
 	text-transform: uppercase;
 	color: #646970;
 	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	margin-bottom: 2px;
+	line-height: 1.2;
 }
 
-.triptych-rep-input {
-	width: 100%;
-	min-height: 30px;
-	padding: 4px 8px;
-	border: 1px solid #dcdcde;
-	border-radius: 3px;
-	background: #fff;
-	font-size: 13px;
-	line-height: 1.4;
-	color: #1d2327;
+/*
+ * Lock single-line input height with !important — WP admin's
+ * `forms.css` and theme stylesheets sometimes set `min-height` on
+ * `input[type="text"]` inside `.postbox`, which would stretch the row
+ * to a textarea-like 200px+ box. Belt-and-suspenders against any
+ * cascading override (theme, plugin, or core).
+ */
+.triptych-mb-structured .triptych-rep-input {
+	display: block !important;
+	box-sizing: border-box !important;
+	width: 100% !important;
+	min-width: 0 !important;
+	height: 32px !important;
+	min-height: 32px !important;
+	max-height: 32px !important;
+	margin: 0 !important;
+	padding: 4px 8px !important;
+	border: 1px solid #dcdcde !important;
+	border-radius: 3px !important;
+	background: #fff !important;
+	font-size: 13px !important;
+	line-height: 1.4 !important;
+	color: #1d2327 !important;
+	resize: none !important;
+	overflow: hidden !important;
+	vertical-align: middle !important;
 }
-.triptych-rep-input:focus {
-	border-color: #2271b1;
-	box-shadow: 0 0 0 1px #2271b1;
-	outline: none;
+.triptych-mb-structured .triptych-rep-input:focus {
+	border-color: #2271b1 !important;
+	box-shadow: 0 0 0 1px #2271b1 !important;
+	outline: none !important;
 }
 
 .triptych-rep-remove {
+	flex: 0 0 24px;
 	align-self: center;
 	width: 24px;
 	height: 24px;
+	min-height: 24px;
 	padding: 0;
+	margin: 0;
 	border: 1px solid transparent;
 	border-radius: 3px;
 	background: transparent;
@@ -203,12 +228,29 @@
 	min-height: 16px;
 }
 
-/* Hide the shadow textarea but keep it focusable for the form submit. */
-.triptych-rep-shadow {
+/*
+ * Hide the shadow textarea. The element carries the `hidden` HTML
+ * attribute too, but some admin themes / plugins re-show hidden
+ * textareas via aggressive `.postbox textarea { display: block; }`
+ * rules. Force the kill with `display: none` AND the visually-hidden
+ * positioning fallback in case some style forces `display` back to
+ * block — the form still submits the textarea's value either way.
+ */
+.triptych-rep-shadow,
+textarea.triptych-rep-shadow {
+	display: none !important;
 	position: absolute !important;
+	left: -9999px !important;
+	top: auto !important;
 	width: 1px !important;
 	height: 1px !important;
+	min-height: 0 !important;
+	max-height: 1px !important;
+	padding: 0 !important;
+	margin: 0 !important;
+	border: 0 !important;
 	overflow: hidden !important;
 	clip: rect(0 0 0 0) !important;
 	white-space: nowrap !important;
+	resize: none !important;
 }
