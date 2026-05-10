@@ -13,10 +13,12 @@ use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * REST endpoints driving the Gutenberg sidebar plugin.
+ * REST endpoints behind the Block Editor language UI.
  *
- *   GET  /wp-json/triptych/v1/post/<id>     → translation snapshot
- *   POST /wp-json/triptych/v1/save           → save one field/lang value
+ *   GET  /wp-json/triptych/v1/post/<id>          → translation snapshot
+ *                                                 (status + values for
+ *                                                  every registered field)
+ *   POST /wp-json/triptych/v1/save               → write one field/lang
  *
  * The translate route lives in Translation\Translator (it predates this
  * file). Endpoints here only deal with reading + persisting translation

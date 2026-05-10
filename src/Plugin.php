@@ -7,7 +7,6 @@ namespace Triptych;
 use Triptych\Admin\SettingsPage;
 use Triptych\Editor\AssetsEnqueue;
 use Triptych\Editor\Metabox;
-use Triptych\Editor\Sidebar;
 use Triptych\Editor\SidebarRest;
 use Triptych\Frontend\ContentFilter;
 use Triptych\Frontend\HreflangEmitter;
@@ -40,10 +39,9 @@ final class Plugin
         ContentFilter::register();
         PermalinkFilter::register();
         HreflangEmitter::register();
-        // Editor surfaces — Block Editor sidebar is the primary UX.
-        // Classic-editor metabox stays registered as a fallback (it
-        // self-disables when no Triptych fields apply to the post type).
-        Sidebar::register();
+        // Editor surfaces — Block Editor integration is the primary UX.
+        // Classic-editor metabox stays registered as a fallback; it
+        // auto-disables when use_block_editor_for_post_type() is true.
         SidebarRest::register();
         Metabox::register();
         AssetsEnqueue::register();
