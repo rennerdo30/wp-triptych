@@ -36,16 +36,22 @@
 	const { BlockControls } = wp.blockEditor;
 	const { serialize, parse } = wp.blocks;
 
-	const cfg = window.TriptychEditor || { languages: { en: 'English' }, default: 'en', i18n: {} };
+	const cfg = window.TriptychEditor || { languages: { en: 'English' }, default: 'en', adminLang: 'en', i18n: {} };
 	const langKeys = Object.keys( cfg.languages );
 	const t = ( k, fb ) => cfg.i18n[ k ] || fb || k;
+	// Resolve the user's preferred admin lang. Honour the value the
+	// server localized (driven by the admin-bar switcher's user meta);
+	// fall back to default if the slug is missing or unregistered.
+	const initialLang = ( cfg.adminLang && cfg.languages[ cfg.adminLang ] )
+		? cfg.adminLang
+		: cfg.default;
 
 	const TRIPTYCH_SAVE_LOCK = 'triptych-non-default-lang';
 
 	// ── Module-scope state shared between the bar, the BlockControls
 	// extension, and the save subscriber.
 	const triptychState = {
-		activeLang: cfg.default,
+		activeLang: initialLang,
 		postId:     0,
 		// Per-language stored snapshot of source-block hashes (captured
 		// at translate / save time). Used to mark blocks "stale" when
@@ -189,6 +195,7 @@
 		const [ saveBusy, setSaveBusy ] = useState( false );
 		const [ error, setError ]       = useState( null );
 		const cacheRef = useRef( {} );  // { lang: { title, content } } unsaved swaps
+		const initialSwitchRef = useRef( false );  // one-shot guard for adminLang preselect
 		const noticesDispatch = useDispatch( 'core/notices' );
 
 		const refresh = useCallback( async () => {
@@ -210,6 +217,33 @@
 		}, [ postId ] );
 
 		useEffect( () => { refresh(); }, [ refresh ] );
+
+		// One-shot: once the post state has loaded, if the user has a
+		// preferred admin language that isn't the source, swap the canvas
+		// to that language's stored content. Honours the toolbar choice
+		// without requiring the editor to click a pill manually.
+		useEffect( () => {
+			if ( initialSwitchRef.current ) return;
+			if ( ! state ) return;
+			if ( initialLang === cfg.default ) {
+				initialSwitchRef.current = true;
+				return;
+			}
+			const tField = state.fields.post_title   || { values: {} };
+			const cField = state.fields.post_content || { values: {} };
+			const nextTitle   = ( tField.values[ initialLang ] || {} ).value || '';
+			const nextContent = ( cField.values[ initialLang ] || {} ).value || '';
+			// Stash the current source-lang canvas before swapping so a
+			// later return to source doesn't lose the in-memory edits.
+			cacheRef.current[ cfg.default ] = {
+				title:   getEditorTitle(),
+				content: getEditorContent(),
+			};
+			setEditorTitle( nextTitle );
+			setEditorContent( nextContent );
+			setActive( initialLang );
+			initialSwitchRef.current = true;
+		}, [ state ] );
 
 		// Recompute the stale-block set whenever the active language
 		// changes or the live source content changes. We hash the

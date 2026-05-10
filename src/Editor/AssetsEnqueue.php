@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Triptych\Editor;
 
+use Triptych\Admin\AdminBar;
 use Triptych\Fields;
 use Triptych\Languages;
 
@@ -77,6 +78,7 @@ final class AssetsEnqueue
         wp_localize_script('triptych-editor', 'TriptychEditor', [
             'languages' => Languages::all(),
             'default'   => Languages::default(),
+            'adminLang' => AdminBar::getAdminLang(),
             'i18n'      => [
                 'switchLabel'      => __('Language', 'triptych'),
                 'sourceLang'       => __('Source', 'triptych'),
