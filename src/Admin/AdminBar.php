@@ -33,7 +33,12 @@ final class AdminBar
     public static function register(): void
     {
         add_action('admin_bar_menu', [self::class, 'render'], 80);
-        add_action('admin_init', [self::class, 'handleSwitch']);
+        // Handle the language-switch click as early as possible so the
+        // redirect fires before any other admin code emits output.
+        // admin_init's default priority of 10 leaves room for plugins
+        // that legitimately need to run before us; priority 1 keeps the
+        // user-meta write and redirect on the critical path.
+        add_action('admin_init', [self::class, 'handleSwitch'], 1);
         add_filter('the_title', [self::class, 'filterListTableTitle'], 10, 2);
     }
 
@@ -123,26 +128,40 @@ final class AdminBar
         if (!isset($_GET[self::QUERY_ARG], $_GET[self::NONCE_QUERY_ARG])) {
             return;
         }
+        if (!current_user_can('read')) {
+            return;
+        }
 
-        $nonce = isset($_GET[self::NONCE_QUERY_ARG]) ? (string) $_GET[self::NONCE_QUERY_ARG] : '';
+        $nonce = (string) wp_unslash($_GET[self::NONCE_QUERY_ARG]);
         if (!wp_verify_nonce($nonce, self::NONCE_ACTION)) {
             return;
         }
 
-        $requested = sanitize_key((string) $_GET[self::QUERY_ARG]);
+        $requested = sanitize_key((string) wp_unslash($_GET[self::QUERY_ARG]));
         if ($requested !== '' && Languages::isValid($requested)) {
             update_user_meta(get_current_user_id(), self::META_KEY, $requested);
         }
 
-        $referer = wp_get_referer();
-        if (!is_string($referer) || $referer === '') {
-            $referer = admin_url();
+        // Prefer the current request URI (minus our params) over the HTTP
+        // Referer — that way the user stays on the screen they clicked
+        // from, even when the browser stripped the Referer header (privacy
+        // settings, cross-origin redirects, etc).
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+        $target = '';
+        if ($request_uri !== '') {
+            $target = remove_query_arg([self::QUERY_ARG, self::NONCE_QUERY_ARG], $request_uri);
         }
-        // Strip our own query args from the redirect target so the
-        // switch URL doesn't loop on itself.
-        $referer = remove_query_arg([self::QUERY_ARG, self::NONCE_QUERY_ARG], $referer);
+        if ($target === '') {
+            $referer = wp_get_referer();
+            if (is_string($referer) && $referer !== '') {
+                $target = remove_query_arg([self::QUERY_ARG, self::NONCE_QUERY_ARG], $referer);
+            }
+        }
+        if ($target === '') {
+            $target = admin_url();
+        }
 
-        wp_safe_redirect($referer);
+        wp_safe_redirect($target);
         exit;
     }
 
@@ -157,7 +176,17 @@ final class AdminBar
         if (!is_admin()) {
             return $title;
         }
-        if (!isset($GLOBALS['pagenow']) || $GLOBALS['pagenow'] !== 'edit.php') {
+        // Restrict to list-table screens. edit.php is the standard CPT
+        // list table; some screens (e.g. attachments) use upload.php.
+        // The list-table inline-edit AJAX action also uses 'inline-save',
+        // which goes through admin-ajax.php — pagenow there is
+        // 'admin-ajax.php'. We handle that case via wp_doing_ajax() so
+        // the inline-save response reflects the user's chosen language.
+        $pagenow = isset($GLOBALS['pagenow']) ? (string) $GLOBALS['pagenow'] : '';
+        $on_list_table = ($pagenow === 'edit.php');
+        $on_ajax_inline = function_exists('wp_doing_ajax') && wp_doing_ajax()
+            && isset($_REQUEST['action']) && $_REQUEST['action'] === 'inline-save';
+        if (!$on_list_table && !$on_ajax_inline) {
             return $title;
         }
         $post_id = (int) $post_id;
@@ -193,14 +222,45 @@ final class AdminBar
         return $url;
     }
 
+    /**
+     * Build a same-host URL for the page the admin bar is currently
+     * rendering on. We deliberately avoid home_url() / site_url() here
+     * because companion plugins (Polylang, WPML, multilingual themes)
+     * filter both to inject language prefixes — that would send the
+     * switch link to a front-end URL, which never fires admin_init and
+     * silently swallows the click.
+     *
+     * Strategy:
+     *   - If we're in admin: build the URL from admin_url() + the path
+     *     under wp-admin/ that the user is currently viewing.
+     *   - Otherwise: fall back to REQUEST_URI as a relative URL, which
+     *     add_query_arg() treats as same-page.
+     */
     private static function currentUrl(): string
     {
         $request_uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
         if ($request_uri === '') {
             return admin_url();
         }
-        // Strip any pre-existing switch params from the round-trip URL.
+        // Strip our own params from the round-trip URL so repeat clicks
+        // don't accumulate stale query args.
         $request_uri = remove_query_arg([self::QUERY_ARG, self::NONCE_QUERY_ARG], $request_uri);
-        return home_url($request_uri);
+
+        if (is_admin()) {
+            // Extract the path under /wp-admin/ from the current request
+            // and rebuild against admin_url() — bypasses any home_url
+            // filter that would point the link at the front end.
+            $admin_root = parse_url(admin_url(), PHP_URL_PATH) ?: '/wp-admin/';
+            $pos = strpos($request_uri, $admin_root);
+            if ($pos !== false) {
+                $tail = substr($request_uri, $pos + strlen($admin_root));
+                return admin_url(ltrim($tail, '/'));
+            }
+            // No /wp-admin/ in REQUEST_URI (shouldn't happen on admin
+            // pages, but possible under reverse proxies that rewrite
+            // the path). Fall back to a relative URL.
+        }
+
+        return $request_uri;
     }
 }
