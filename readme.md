@@ -33,13 +33,27 @@ This is opinionated. If you need fully independent slugs / categories / SEO meta
 git clone https://github.com/rennerdo30/wp-triptych.git
 ```
 
-Activate the plugin in **Plugins → Installed Plugins**, then visit **Settings → Triptych** to:
+Requires WordPress 6.5+ and PHP 8.1+. No Composer install is needed to run the plugin — dependencies are dev-only (PHPUnit).
 
-1. Configure your language list (default `zh:中文,ja:日本語,en:English`).
-2. Pick a default language.
-3. (Optional) Point the AI translator at DeepSeek / OpenAI / Anthropic / Ollama / etc.
+Activate the plugin in **Plugins → Installed Plugins**, then open the top-level **Triptych** menu in wp-admin to:
 
-Edit any post — a pill bar (`CN | JP | EN`) sits across the top of the canvas. Click a pill to swap title + content + every registered field to that language.
+1. Configure your language list (`triptych_languages`, default `zh:中文,ja:日本語,en:English`).
+2. Pick a default language (`triptych_default_language`, default `en`).
+3. (Optional) Point the AI translator at DeepSeek / OpenAI / Anthropic / Ollama / etc. via endpoint URL, API key, and model name.
+
+Edit any post — a pill bar sits across the top of the canvas, one pill per configured language. Click a pill to swap title + content + every registered field to that language.
+
+### Configuration options
+
+Every setting is a plain WP option, so it can also be set with WP-CLI or in a bootstrap plugin:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `triptych_languages` | `zh:中文,ja:日本語,en:English` | Comma-separated `slug:Label` pairs. Any number of languages. |
+| `triptych_default_language` | `en` | Source language for translation and fallback for missing values. |
+| `triptych_endpoint` | `https://api.deepseek.com/v1` | OpenAI-compatible chat-completions base URL. |
+| `triptych_api_key` | *(empty)* | API key for that endpoint. |
+| `triptych_model` | `deepseek-v4-pro` | Model name sent with each request. |
 
 ## In-canvas editing (v0.3.x)
 
@@ -51,6 +65,14 @@ The Block Editor is the primary surface. Triptych enqueues an `admin-editor.js` 
 - **Falls back to a classic-editor metabox** automatically on post types that opt out of the Block Editor.
 
 The classic metabox stays registered as a fallback and self-disables when `use_block_editor_for_post_type()` is true.
+
+## Admin surfaces
+
+Beyond the editor canvas, Triptych adds three places to see and drive translation state:
+
+- **Triptych → Translations** — a coverage table of every publishable post in any post type that has at least one Triptych field, with one status pill per language. Filter by post type, language, or title; hit *Translate missing* on a row to fill empty `post_title` + `post_content` for all non-default languages; or bulk-translate the whole filtered set into one language with live progress. Cells for non-default languages open a popover with **Edit** / **Re-translate** / **Delete**.
+- **A "Languages" column** on `edit.php` list tables (added just before *Date*), showing a filled pill for the default language, green for languages with content, and a grey outline for missing ones.
+- **An admin-bar language switcher**, Polylang-style. The choice is stored per user in the `triptych_admin_lang` user meta, so it survives page loads without leaking between users; the Block Editor opens on that language and list-table titles render in it.
 
 ## Field registration API
 
@@ -109,13 +131,11 @@ Per-block source-drift hashes are stored alongside under `_triptych_{field}_{lan
 
 ## REST endpoints
 
-Auth on every route is `current_user_can('edit_posts')`.
-
-| Route | Method | Purpose |
-|---|---|---|
-| `/wp-json/triptych/v1/post/<id>` | `GET` | Snapshot of every registered field × language for the post, plus per-field source-hash arrays. |
-| `/wp-json/triptych/v1/save` | `POST` | Write one `{field, lang, value, source_hashes?}` tuple. Pass an empty `source_hashes` array to clear the drift snapshot. |
-| `/wp-json/triptych/v1/translate` | `POST` | Translate a string from one language to another via the configured endpoint. |
+| Route | Method | Auth | Purpose |
+|---|---|---|---|
+| `/wp-json/triptych/v1/post/<id>` | `GET` | `edit_post` on `<id>` | Snapshot of every registered field × language for the post, plus per-field source-hash arrays. |
+| `/wp-json/triptych/v1/save` | `POST` | `edit_post` on `post_id` | Write one `{post_id, field, lang, value, source_hashes?}` tuple. Pass an empty `source_hashes` array to clear the drift snapshot. |
+| `/wp-json/triptych/v1/translate` | `POST` | `edit_posts` | Translate `{from, to, text, field?}` via the configured endpoint. |
 
 ## AI auto-translate
 
@@ -132,7 +152,7 @@ Triptych speaks the **OpenAI Chat Completions** schema, the lingua franca of LLM
 | Ollama (local) | `http://localhost:11434/v1` | `llama3.2` |
 | vLLM / llama.cpp | your own | your own |
 
-Translation calls run per block from the toolbar button. The classic-editor metabox keeps a per-pane *AI translate* button that fills the entire field at once.
+Translation calls run per block from the toolbar button. The classic-editor metabox keeps a per-pane *AI translate* button that fills the entire field at once, and **Triptych → Translations** drives the same translator across many posts.
 
 ## URL routing
 
@@ -168,6 +188,16 @@ Triptych registers a request-time Router that strips the language prefix from `R
                        fields swap by current language
 ```
 
+## Development
+
+Plain PHP 8.1 with a small hand-rolled PSR-4 autoloader, vanilla JS for the editor bundle, and no build step. Composer is only needed for the test tooling:
+
+```bash
+composer install
+composer test   # phpunit
+composer lint   # php -l across src/
+```
+
 ## Known limitations
 
 - **One canonical slug.** Per-language slugs are not supported. `/zh/foo/` and `/ja/foo/` resolve the same post; the slug is whatever the canonical row has. Per-language slugs are on the roadmap as opt-in.
@@ -180,7 +210,7 @@ Triptych registers a request-time Router that strips the language prefix from `R
 
 - [ ] **Taxonomy term translation** — categories, tags, and custom taxonomies.
 - [ ] **REST API per-language** — accept `?triptych_lang=ja` on standard `/wp/v2/posts` and swap fields server-side.
-- [ ] **Bulk translate** — translate all empty fields on a post in a single call.
+- [x] **Bulk translate** — shipped on the *Translations* screen (per-row *Translate missing* plus a bulk run across the filtered set).
 - [ ] **Translation memory** — cache common phrases to skip duplicate API calls.
 - [ ] **Per-language slugs** — opt-in, since most sites won't need it.
 - [ ] **Polylang import tool** — migrate post-twin sites onto Triptych in one shot.
